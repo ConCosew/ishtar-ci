@@ -60,6 +60,65 @@ jobs:
           xcodebuild -version >> p4-report/host.txt
           df -h . >> p4-report/host.txt
 
+      - name: Preflight (fail in seconds, before the expensive steps)
+        working-directory: unixnu
+        run: |
+          set -euo pipefail
+          echo "== duplicate source appends in build-sheng-source-storage.py =="
+          python3 - <<'PY'
+          import re
+          from collections import Counter
+          from pathlib import Path
+          p = Path('scripts/build-sheng-source-storage.py')
+          t = p.read_text()
+          names = re.findall(r"device_source\('([^']+)'\)", t)
+          appends = re.findall(r"sources\.append\(device_source\('([^']+)'\)\)", t)
+          dup = {k: v for k, v in Counter(appends).items() if v > 1}
+          print('append count:', len(appends))
+          print('duplicates:', dup or 'none')
+          if dup:
+              raise SystemExit('duplicate archive sources: %s' % dup)
+          print('PREFLIGHT duplicate-source OK')
+          PY
+          echo "== GopFramebuffer pin consistency =="
+          python3 - <<'PY'
+          import re, subprocess
+          from pathlib import Path
+          comp = Path('components.toml').read_text()
+          m = re.search(r'id = "GopFramebuffer"(.{0,600}?)revision = "([0-9a-f]{40})"', comp, re.S)
+          comp_pin = m.group(2) if m else None
+          link = subprocess.run(['git', 'ls-tree', 'HEAD', 'drivers/GopFramebuffer'],
+                                capture_output=True, text=True).stdout.split()
+          link_pin = link[2] if len(link) >= 3 else None
+          print('components.toml pin:', comp_pin)
+          print('drivers gitlink    :', link_pin)
+          if comp_pin != link_pin:
+              raise SystemExit('pin mismatch: the builder compiles the gitlink, so they must match')
+          print('PREFLIGHT pin OK')
+          PY
+          echo "== GopFramebuffer source symbols =="
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+          need = ['native_gop_virtual', 'native_legacy_direct_snapshot']
+          forbid = ['native_adreno_fences']
+          text = ''
+          for f in ('NativeLegacyDisplay.cpp', 'NativeGOPPresenter.cpp'):
+              p = Path('drivers/GopFramebuffer') / f
+              if p.is_file():
+                  text += p.read_text()
+          if not text:
+              raise SystemExit('drivers/GopFramebuffer is empty; submodules not initialised')
+          for sym in need:
+              present = sym in text or 'native_legacy_direct' in text
+              print(f'{"have" if present else "MISSING"} {sym}')
+              if not present:
+                  raise SystemExit(f'{sym} not found in the pinned GopFramebuffer')
+          for sym in forbid:
+              if sym in text:
+                  raise SystemExit(f'{sym} is referenced but stage 0 builds no Adreno740')
+          print('PREFLIGHT symbols OK')
+          PY
       - name: Private inputs (live FDT)
         working-directory: unixnu
         run: |
