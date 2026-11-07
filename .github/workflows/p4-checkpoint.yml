@@ -12,6 +12,13 @@ on:
         description: Dump the XnuPrelink kext-facing pairing report (analysis only)
         type: boolean
         default: false
+      stub_gate:
+        description: strict fails the job while panic stubs remain; off allows a milestone boot.img
+        type: choice
+        options:
+          - strict
+          - off
+        default: strict
 permissions:
   contents: read
 concurrency:
@@ -351,6 +358,55 @@ jobs:
           print('functions', s.get('functions_matched'), '/', s.get('functions_original'))
           PY
           head -6 ../p4-report/p5-unmapped.txt || true
+      - name: Stub gate (fail while any kext call still lands on the panic stub)
+        if: ${{ inputs.stub_gate == 'strict' }}
+        working-directory: unixnu
+        run: |
+          set -uo pipefail
+          python3 - <<'PY' 2>&1 | tee ../p4-report/stub-gate.log
+          import re, struct, sys
+          from pathlib import Path
+          k = Path('out/ishtar/ios-27.0.1-24A446/ishtar_ios27/kernel/kernel.macho')
+          d = k.read_bytes()
+          ncmds = struct.unpack_from('<I', d, 16)[0]
+          p, base, symtabs = 32, None, []
+          for _ in range(ncmds):
+              cmd, size = struct.unpack_from('<II', d, p)
+              if cmd == 0x19 and d[p + 8:p + 24].rstrip(b'\0') == b'__TEXT':
+                  base = struct.unpack_from('<Q', d, p + 24)[0]
+              elif cmd == 0x80000035:
+                  vm, fo = struct.unpack_from('<QQ', d, p + 8)
+                  q = fo + 32
+                  for _ in range(struct.unpack_from('<I', d, fo + 16)[0]):
+                      c, s = struct.unpack_from('<II', d, q)
+                      if c == 0x2:
+                          symtabs.append(struct.unpack_from('<IIII', d, q + 8))
+                      q += s
+              p += size
+          assert base, 'no __TEXT segment'
+          stub = None
+          for symoff, nsyms, stroff, strsize in symtabs:
+              strs = d[stroff:stroff + strsize]
+              for i in range(nsyms):
+                  strx, ntype, nsect, ndesc, nval = struct.unpack_from('<IBBHQ', d, symoff + i * 16)
+                  if nval and strs[strx:strs.find(b'\0', strx)] == b'_unixnu_fileset_unmapped':
+                      stub = nval
+          print('__TEXT base       %#x' % base)
+          print('panic stub        %s' % ('%#x' % stub if stub else 'ABSENT (patch not applied)'))
+          count = 0
+          if stub:
+              low = (stub - base) & 0xFFFFFFFFFFFF
+              for off in range(0, len(d) - 8, 8):
+                  if struct.unpack_from('<Q', d, off)[0] & 0xFFFFFFFFFFFF == low:
+                      count += 1
+              print('pointer low48     %#x' % low)
+          print('STUB_SLOTS        %d' % count)
+          Path('../p4-report/stub-gate.txt').write_text(
+              'kernel.macho sha256 %s\n__TEXT base %#x\npanic stub %s\nSTUB_SLOTS %d\n'
+              % (__import__('hashlib').sha256(d).hexdigest(), base, '%#x' % stub if stub else 'absent', count))
+          sys.exit(0 if count == 0 else 1)
+          PY
+          cat ../p4-report/stub-gate.txt >> "$GITHUB_STEP_SUMMARY"
       - name: Build firmware
         working-directory: unixnu
         run: |
