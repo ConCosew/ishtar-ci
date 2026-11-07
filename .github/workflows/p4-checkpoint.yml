@@ -12,6 +12,10 @@ on:
         description: Dump the XnuPrelink kext-facing pairing report (analysis only)
         type: boolean
         default: false
+      dump_context:
+        description: Dump original-side call context for the hottest unnamed targets
+        type: boolean
+        default: false
       stub_gate:
         description: strict fails the job while panic stubs remain; off allows a milestone boot.img
         type: choice
@@ -358,6 +362,229 @@ jobs:
           print('functions', s.get('functions_matched'), '/', s.get('functions_original'))
           PY
           head -6 ../p4-report/p5-unmapped.txt || true
+      - name: P5 target context (analysis only)
+        if: ${{ inputs.dump_context }}
+        working-directory: unixnu
+        run: |
+          set -uo pipefail
+          python3 - <<'PY' 2>&1 | tee ../p4-report/p5-context.log || true
+          import collections, struct
+          from pathlib import Path
+
+          TOP = 30
+          WINDOW = 12
+          kc = Path('out/ipsw/24A446/kernelcache.decompressed').read_bytes()
+          d = kc
+
+          # ---- index every fileset entry: name -> [(seg, start, end, fileoff)] ----
+          entries = []
+          ncmds = struct.unpack_from('<I', d, 16)[0]
+          p = 32
+          for _ in range(ncmds):
+              cmd, size = struct.unpack_from('<II', d, p)
+              if cmd == 0x80000035:
+                  vm, fo, ilen, _ = struct.unpack_from('<QQII', d, p + 8)
+                  name = d[p + 32:p + 32 + ilen].split(b'\0')[0].decode('latin-1', 'replace')
+                  sub = []
+                  q = fo + 32
+                  for _ in range(struct.unpack_from('<I', d, fo + 16)[0]):
+                      c, s = struct.unpack_from('<II', d, q)
+                      if c == 0x19:
+                          seg = d[q + 8:q + 24].split(b'\0')[0].decode('latin-1', 'replace')
+                          svm, svs, sfo, sfs = struct.unpack_from('<QQQQ', d, q + 24)
+                          sub.append((seg, svm, svm + svs, sfo))
+                      q += s
+                  entries.append((name, sub))
+              p += size
+
+          def owner(addr):
+              for name, segs in entries:
+                  for seg, lo, hi, fo in segs:
+                      if lo <= addr < hi:
+                          return name, seg, fo + (addr - lo)
+              return None, None, None
+
+          def rd(addr, n=8):
+              name, seg, off = owner(addr)
+              if off is None:
+                  return b''
+              return d[off:off + n]
+
+          def cstr(addr, limit=48):
+              raw = rd(addr, limit)
+              cut = raw.find(b'\0')
+              raw = raw[:cut] if cut >= 0 else raw
+              if len(raw) >= 4 and all(32 <= c < 127 for c in raw):
+                  return raw.decode('latin-1')
+              return None
+
+          def word(addr):
+              _, _, off = owner(addr)
+              if off is None:
+                  return None
+              return struct.unpack_from('<I', d, off)[0]
+
+          def adrp(ins, pc):
+              immlo, immhi = (ins >> 29) & 3, (ins >> 5) & 0x7FFFF
+              imm = ((immhi << 2) | immlo) << 12
+              if imm >> 32:
+                  imm -= 1 << 33
+              return (pc & ~0xFFF) + imm
+
+          def branch(ins, pc):
+              if (ins >> 26) != 0x25 and (ins >> 26) != 0x05:
+                  return None
+              imm = ins & 0x3FFFFFF
+              if imm & 0x2000000:
+                  imm -= 0x4000000
+              return pc + imm * 4
+
+          def addimm(ins):
+              return ((ins >> 10) & 0xFFF) << (12 * ((ins >> 22) & 1))
+
+          def ldr_off(ins):
+              return ((ins >> 10) & 0xFFF) * 8
+
+          def scan_calls(target, limit=3):
+              """direct bl to target"""
+              out = []
+              for name, segs in entries:
+                  for seg, lo, hi, fo in segs:
+                      if seg != '__TEXT_EXEC':
+                          continue
+                      for i in range(0, hi - lo - 4, 4):
+                          w = struct.unpack_from('<I', d, fo + i)[0]
+                          if (w >> 26) == 0x25:
+                              imm = w & 0x3FFFFFF
+                              if imm & 0x2000000:
+                                  imm -= 0x4000000
+                              if lo + i + imm * 4 == target:
+                                  out.append(lo + i)
+                                  if len(out) >= limit:
+                                      return out
+              return out
+
+          def scan_loads(slot, limit=3):
+              """adrp (+add/ldr) resolving to the slot, inside the kext that owns the slot"""
+              owner_name, _, _ = owner(slot)
+              out = []
+              for name, segs in entries:
+                  if name != owner_name:
+                      continue
+                  for seg, lo, hi, fo in segs:
+                      if seg != '__TEXT_EXEC':
+                          continue
+                      for i in range(0, hi - lo - 16, 4):
+                          w = struct.unpack_from('<I', d, fo + i)[0]
+                          if (w & 0x9F00001F) != 0x90000000:
+                              continue
+                          page = adrp(w, lo + i)
+                          for k in (4, 8, 12):
+                              w2 = struct.unpack_from('<I', d, fo + i + k)[0]
+                              if (w2 & 0xFF800000) == 0xF9400000:
+                                  if page + ldr_off(w2) == slot:
+                                      out.append(lo + i)
+                                      break
+                              if (w2 & 0xFF800000) == 0x91000000:
+                                  if page + addimm(w2) == slot:
+                                      out.append(lo + i)
+                                      break
+                          if len(out) >= limit:
+                              return out
+              return out
+
+          def describe(addr, count=WINDOW):
+              lines = []
+              for k in range(count):
+                  a = addr + 4 * k
+                  w = word(a)
+                  if w is None:
+                      break
+                  note = ''
+                  b = branch(w, a)
+                  if b is not None:
+                      n, s, _ = owner(b)
+                      note = ('BL -> %#x  %s:%s' if (w >> 26) == 0x25 else 'B  -> %#x  %s:%s') % (
+                          b, n or '?', s or '?')
+                  elif (w & 0x9F00001F) == 0x90000000:
+                      note = 'adrp -> %#x' % adrp(w, a)
+                  elif (w & 0xFF800000) == 0xF9400000:
+                      note = 'ldr [x?, #%#x]' % ldr_off(w)
+                  elif (w & 0xFF800000) == 0x91000000:
+                      note = 'add #%#x' % addimm(w)
+                  lines.append('    %#018x  %08x  %s' % (a, w, note))
+              return lines
+
+          rows = []
+          for line in Path('../p4-report/p5-unmapped.txt').read_text().splitlines():
+              if line.startswith('#') or not line.strip():
+                  continue
+              addr, rest = line.split(None, 1)
+              refs = int(rest.split('refs=')[1].split()[0])
+              kexts = rest.split('kexts=')[1].split()[0]
+              sites = rest.split('sites=')[1].split()[0].split(',')
+              rows.append((refs, int(addr, 16), kexts, [int(s, 16) for s in sites if s.startswith('0x')]))
+          rows.sort(reverse=True)
+          top = rows[:TOP]
+          want_targets = {t for _, t, _, _ in top}
+          want_slots = {s for _, _, _, ss in top for s in ss[:2]}
+
+          call_index = collections.defaultdict(list)
+          load_index = collections.defaultdict(list)
+          for name, segs in entries:
+              for seg, lo, hi, fo in segs:
+                  if seg != '__TEXT_EXEC':
+                      continue
+                  for i in range(0, hi - lo - 16, 4):
+                      w = struct.unpack_from('<I', d, fo + i)[0]
+                      pc = lo + i
+                      if (w >> 26) == 0x25:
+                          imm = w & 0x3FFFFFF
+                          if imm & 0x2000000:
+                              imm -= 0x4000000
+                          tgt = pc + imm * 4
+                          if tgt in want_targets:
+                              call_index[tgt].append(pc)
+                      elif (w & 0x9F00001F) == 0x90000000:
+                          page = adrp(w, pc)
+                          for k in (4, 8, 12):
+                              w2 = struct.unpack_from('<I', d, fo + i + k)[0]
+                              if (w2 & 0xFF800000) == 0xF9400000:
+                                  a2 = page + ldr_off(w2)
+                              elif (w2 & 0xFF800000) == 0x91000000:
+                                  a2 = page + addimm(w2)
+                              else:
+                                  continue
+                              if a2 in want_slots:
+                                  load_index[a2].append(pc)
+                              break
+          print('index: %d targets with direct calls, %d slots with loaders' % (len(call_index), len(load_index)))
+
+          out = ['# P5 top-%d unnamed targets: original-side context' % TOP,
+                 '# kernelcache %s' % Path('out/ipsw/24A446/kernelcache.decompressed').name,
+                 '# columns: target | refs | kexts | GOT slot | call sites',
+                 '']
+          for refs, target, kexts, sites in top:
+              out.append('=' * 100)
+              out.append('%#x  refs=%d  kexts=%s' % (target, refs, kexts))
+              for slot in sites[:2]:
+                  out.append('  GOT slot %#018x  owner=%s' % (slot, owner(slot)[0] or '?'))
+                  loads = load_index.get(slot, [])[:3]
+                  out.append('  loads: %s' % (', '.join('%#x' % x for x in loads) or 'none in kext text'))
+                  for a in loads[:2]:
+                      out.extend(describe(max(a - 8, a - 32), 14))
+              calls = call_index.get(target, [])[:3]
+              out.append('  direct calls: %s' % (', '.join('%#x' % x for x in calls) or 'none'))
+              for a in calls[:2]:
+                  out.extend(describe(max(a - 32, a - 96), 12))
+              out.append('  target bytes: %s' % rd(target, 16).hex())
+              s = cstr(target)
+              if s:
+                  out.append('  target is a string: %r' % s)
+          Path('../p4-report/p5-context.txt').write_text('\n'.join(out) + '\n')
+          print('wrote p5-context.txt: %d targets, %d lines' % (min(TOP, len(top)), len(out)))
+          PY
+          head -40 ../p4-report/p5-context.log || true
       - name: Stub gate (fail while any kext call still lands on the panic stub)
         if: ${{ inputs.stub_gate == 'strict' }}
         working-directory: unixnu
@@ -485,7 +712,7 @@ jobs:
           RID=$(python3 -c "import json;print(json.load(open('../p4-report/release.json'))['id'])")
           cp ../p4-report/boot.json ../p4-report/boot.json.txt
           FILES=("$B" ../p4-report/boot.json.txt ../p4-report/RELEASE.md)
-          for extra in ../p4-report/p5-unmapped.txt ../p4-report/pairing.log; do
+          for extra in ../p4-report/p5-unmapped.txt ../p4-report/pairing.log ../p4-report/p5-context.txt; do
             [ -f "$extra" ] && FILES+=("$extra")
           done
           if [ -f ../p4-report/userdata-root.json ]; then
