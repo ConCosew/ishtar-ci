@@ -277,6 +277,13 @@ jobs:
           git -C Binaries checkout -q 67a2392eae79f921675777de0f550dc87e151db6
           echo "Binaries/ishtar files: $(find Binaries/ishtar -type f | wc -l)"
 
+      - name: P5 reviewed fixture
+        working-directory: unixnu
+        run: |
+          set -euo pipefail
+          mkdir -p kits/XnuPrelink/fixtures
+          cp fixtures/fileset-fa07057b-symbols.json kits/XnuPrelink/fixtures/
+          ls -l kits/XnuPrelink/fixtures/
       - name: Build kernel
         working-directory: unixnu
         run: |
