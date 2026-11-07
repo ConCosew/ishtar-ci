@@ -1,0 +1,240 @@
+name: p4-checkpoint
+on:
+  workflow_dispatch:
+    inputs:
+      xcode:
+        default: "26.6"
+permissions:
+  contents: read
+concurrency:
+  group: p4-checkpoint
+  cancel-in-progress: false
+jobs:
+  checkpoint:
+    runs-on: macos-26
+    timeout-minutes: 300
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_${{ inputs.xcode }}.app/Contents/Developer
+      UNIXNU_DEVICE: ${{ github.workspace }}/device
+      UNIXNU_UEFI: ${{ github.workspace }}/uefi-ishtar
+      UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+      GITHUB_TOKEN: ${{ github.token }}
+      GH_PAT: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
+      OWNER: ConCosew
+    steps:
+      - name: Check out the private UniXNU build tree
+        uses: actions/checkout@v4
+        with:
+          repository: ConCosew/ishtar-unixnu
+          ref: ishtar-build
+          token: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
+          path: unixnu
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the private device repository (safe-checkpoint)
+        uses: actions/checkout@v4
+        with:
+          repository: ConCosew/ishtar-device
+          ref: safe-checkpoint
+          token: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
+          path: device
+          persist-credentials: false
+      - name: Check out the private uefi board package
+        uses: actions/checkout@v4
+        with:
+          repository: ConCosew/ishtar-uefi
+          ref: ishtar
+          token: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
+          path: uefi-ishtar
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Host tools
+        run: |
+          set -euo pipefail
+          mkdir -p p4-report
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install -q llvm lld mtools dtc unifdef blacktop/tap/ipsw || true
+          sw_vers >> p4-report/host.txt
+          xcodebuild -version >> p4-report/host.txt
+          df -h . >> p4-report/host.txt
+
+      - name: Private inputs (live FDT)
+        working-directory: unixnu
+        run: |
+          set -uo pipefail
+          mkdir -p out/ipsw/24A446
+          rel=$(curl -fsSL -H "Authorization: Bearer $GH_PAT" \
+            "https://api.github.com/repos/$OWNER/ishtar-device/releases/tags/checkpoint-inputs-2026-11-06")
+          aid=$(printf '%s' "$rel" | jq -r '.assets[] | select(.name=="ishtar.dtb") | .id')
+          curl -fsSL -H "Authorization: Bearer $GH_PAT" -H "Accept: application/octet-stream" \
+            "https://api.github.com/repos/$OWNER/ishtar-device/releases/assets/$aid" -o out/ipsw/24A446/ishtar.dtb
+          size=$(stat -f%z out/ipsw/24A446/ishtar.dtb)
+          echo "live FDT: $size bytes sha256 $(shasum -a 256 out/ipsw/24A446/ishtar.dtb | cut -d' ' -f1)" | tee ../p4-report/inputs.txt
+          test "$size" = "901987"
+
+      - name: defconfig / fetch / ipsw fetch / AEA decrypt
+        working-directory: unixnu
+        run: |
+          set -uo pipefail
+          ./unixnu defconfig ishtar_ios27_defconfig -D ../device 2>&1 | tee -a ../p4-report/build.log
+          ./unixnu fetch -D ../device 2>&1 | tee -a ../p4-report/build.log
+          ./unixnu ipsw fetch -D ../device 2>&1 | tee -a ../p4-report/build.log
+          ./unixnu ipsw fetch OS Cryptex1,SystemOS -D ../device 2>&1 | tee -a ../p4-report/build.log
+          python3 - <<'PY' 2>&1 | tee -a ../p4-report/build.log
+          import sys
+          sys.path.insert(0, 'scripts')
+          from unixnu.ipsw import decrypt_aea
+          from pathlib import Path
+          for n in ('043-69909-664.dmg.aea', '043-68526-711.dmg.aea'):
+              p = Path('out/ipsw/24A446') / n
+              print('decrypt', n, p.is_file())
+              if p.is_file(): print(' -> decrypted', decrypt_aea(p).name)
+          PY
+
+      - name: T5 owner root policies + T6 trust bundle
+        working-directory: unixnu
+        run: |
+          set -euo pipefail
+          git submodule update --init --depth 1 -- kits/VerifiedRoot 2>&1 | tee -a ../p4-report/build.log
+          KEYS=build/verified-root-host/keys
+          mkdir -p "$KEYS"
+          openssl genrsa -out "$KEYS/owner.pem" 3072 2>/dev/null
+          openssl rsa -in "$KEYS/owner.pem" -pubout -out "$KEYS/owner-public.pem" 2>/dev/null
+          OPENSSL_PREFIX=$(brew --prefix openssl@3 2>/dev/null || brew --prefix openssl)
+          xcrun clang -std=c11 -Wall -Wextra -Werror -dynamiclib \
+            -I kits/VerifiedRoot/include -I "$OPENSSL_PREFIX/include" \
+            kits/VerifiedRoot/src/verified_root.c kits/VerifiedRoot/tests/openssl_provider.c \
+            -L "$OPENSSL_PREFIX/lib" -lcrypto \
+            -o build/verified-root-host/verified-root.dylib 2>&1 | tee -a ../p4-report/build.log
+          OUT=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/build/verified-root-24A446
+          python3 ../device/scripts/build-root-policies.py --unixnu . --profile ios-27.0.1-24A446 \
+            --out "$OUT" 2>&1 | tee -a ../p4-report/build.log
+          python3 ../device/scripts/build-trust-bundle.py --ipsw-cache out/ipsw/24A446 2>&1 | tee -a ../p4-report/build.log
+          for n in OS SystemOS; do
+            for f in manifest.bin trusted-key.bin verification.json hashes.bin; do
+              test -f "$OUT/$n/$f" || { echo "MISSING $n/$f"; exit 1; }
+            done
+          done
+          echo "T5/T6 PASS" | tee -a ../p4-report/build.log
+
+      - name: Init uefi submodules and link the private Binaries
+        working-directory: uefi-ishtar
+        run: |
+          set -euo pipefail
+          git submodule update --init --depth 1 2>&1 | tail -5 || true
+          rm -rf Binaries
+          git clone -q "https://x-access-token:$GH_PAT@github.com/$OWNER/ishtar-device-binaries.git" Binaries
+          git -C Binaries checkout -q 67a2392eae79f921675777de0f550dc87e151db6
+          echo "Binaries/ishtar files: $(find Binaries/ishtar -type f | wc -l)"
+
+      - name: Build kernel
+        working-directory: unixnu
+        run: |
+          set -uo pipefail
+          ./unixnu build kernel -D ../device 2>&1 | tee -a ../p4-report/build.log
+          K=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/kernel/kernel.macho
+          test -f "$K" || { echo "kernel.macho MISSING"; exit 1; }
+          echo "kernel.macho $(stat -f%z "$K") bytes sha256 $(shasum -a 256 "$K" | cut -d' ' -f1)" | tee -a ../p4-report/artifacts.txt
+
+      - name: Build firmware
+        working-directory: unixnu
+        run: |
+          set -uo pipefail
+          ./unixnu build package -D ../device 2>&1 | tee -a ../p4-report/build.log
+          ./unixnu build firmware -D ../device --uefi ../uefi-ishtar 2>&1 | tee -a ../p4-report/build.log
+          FD=../uefi-ishtar/Build/ishtarPkg/DEBUG_CLANGPDB/FV/SILICIUM_UEFI.fd
+          test -f "$FD" || { echo "SILICIUM_UEFI.fd MISSING"; exit 1; }
+          echo "FD $(stat -f%z "$FD") bytes sha256 $(shasum -a 256 "$FD" | cut -d' ' -f1)" | tee -a ../p4-report/artifacts.txt
+          test "$(stat -f%z "$FD")" = "3145728"
+
+      - name: Build the safe-checkpoint payload
+        working-directory: unixnu
+        run: |
+          set -uo pipefail
+          TC=build/original-static-system-trust/original-static-system.bundle
+          ./unixnu build payload -D ../device --trust-cache "$TC" \
+            --unique-chip-id "$UNIXNU_UNIQUE_CHIP_ID" 2>&1 | tee -a ../p4-report/build.log
+          P=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/payload/payload.json
+          test -f "$P" || { echo "payload.json MISSING"; exit 1; }
+          echo "== kernel arg safety ==" | tee ../p4-report/safety.txt
+          for bad in sheng-data-persist sheng-data-reset native-ufs-root native-source-storage; do
+            if grep -q "$bad" "$P"; then echo "UNSAFE $bad present" | tee -a ../p4-report/safety.txt; else echo "SAFE $bad absent" | tee -a ../p4-report/safety.txt; fi
+          done
+          ! grep -q -E 'sheng-data-persist|sheng-data-reset|native-ufs-root|native-source-storage' "$P"
+
+      - name: bootimg (header v0)
+        working-directory: unixnu
+        run: |
+          set -uo pipefail
+          ./unixnu bootimg -D ../device --uefi ../uefi-ishtar --dtb out/ipsw/24A446/ishtar.dtb 2>&1 | tee -a ../p4-report/build.log
+          B=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/boot/boot.img
+          J=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/boot/boot.json
+          test -f "$B" || { echo "boot.img MISSING"; exit 1; }
+          cp "$J" ../p4-report/boot.json
+          echo "boot.img $(stat -f%z "$B") bytes sha256 $(shasum -a 256 "$B" | cut -d' ' -f1)" | tee -a ../p4-report/artifacts.txt
+          python3 - <<'PY' | tee ../p4-report/boot-verification.txt
+          import json
+          d = json.load(open('../p4-report/boot.json'))
+          print('header_version =', d.get('header_version'))
+          print('ramdisk_bytes  =', d.get('ramdisk_bytes'))
+          print('pagesize       =', d.get('pagesize'))
+          assert d.get('header_version') == 0
+          assert (d.get('ramdisk_bytes') or 0) > 0
+          print('BOOTIMG PASS')
+          PY
+
+      - name: Private Release (boot.img + manifest only)
+        if: success()
+        working-directory: unixnu
+        run: |
+          set -euo pipefail
+          TAG="checkpoint-${{ github.run_id }}"
+          B=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/boot/boot.img
+          SHA=$(shasum -a 256 "$B" | cut -d' ' -f1)
+          {
+            echo "# ishtar safe checkpoint"
+            echo
+            echo "boot.img sha256: $SHA"
+            echo "bytes: $(stat -f%z "$B")"
+            echo
+            echo "header_version=0 (v1 drops USB with the 176 MiB ramdisk)"
+            echo "No sheng-data-persist / sheng-data-reset / native-ufs-root / native-source-storage in kernel args."
+            echo "payload.adt.persistent_data=false. fastboot boot only; NEVER flash userdata."
+            echo
+            echo "Run yourself: fastboot boot boot.img"
+            echo "Expected: UniXNU menu -> DarwinBoot -> first -v XNU console line."
+            echo "UFS root mount will fail; that is the checkpoint boundary."
+          } > ../p4-report/RELEASE.md
+          cat ../p4-report/RELEASE.md
+          payload=$(python3 -c "import json;print(json.dumps({'tag_name':'$TAG','name':'ishtar safe checkpoint (private)','body':open('../p4-report/RELEASE.md').read(),'draft':False,'prerelease':True}))")
+          curl -fsSL -X POST -H "Authorization: Bearer $GH_PAT" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$OWNER/ishtar-device/releases" -d "$payload" > ../p4-report/release.json
+          RID=$(python3 -c "import json;print(json.load(open('../p4-report/release.json'))['id'])")
+          cp ../p4-report/boot.json ../p4-report/boot.json.txt
+          for f in "$B" ../p4-report/boot.json.txt ../p4-report/RELEASE.md; do
+            n=$(basename "$f")
+            curl -fsSL -X POST -H "Authorization: Bearer $GH_PAT" -H "Content-Type: application/octet-stream" \
+              "https://uploads.github.com/repos/$OWNER/ishtar-device/releases/$RID/assets?name=$n" \
+              --data-binary "@$f" > /dev/null
+          done
+          echo "RELEASE tag=$TAG id=$RID" | tee ../p4-report/release.txt
+
+      - name: Summary (sanitized, this repo is public)
+        if: always()
+        run: |
+          set -uo pipefail
+          {
+            echo "## ishtar safe checkpoint"
+            echo
+            cat p4-report/inputs.txt 2>/dev/null || true
+            cat p4-report/artifacts.txt 2>/dev/null || true
+            cat p4-report/safety.txt 2>/dev/null || true
+            cat p4-report/boot-verification.txt 2>/dev/null || true
+            cat p4-report/release.txt 2>/dev/null || true
+            echo
+            echo "Private sources: ConCosew/ishtar-unixnu, ishtar-device, ishtar-uefi, ishtar-device-binaries."
+            echo "No images, no proprietary binaries and no platform seed are published by this workflow."
+          } >> "$GITHUB_STEP_SUMMARY"
