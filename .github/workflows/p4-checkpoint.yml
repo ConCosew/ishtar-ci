@@ -277,14 +277,80 @@ jobs:
           set -uo pipefail
           K=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf
           R=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/build/xnu/fileset-reference/mach.release.bcm2837.unstripped.noctf
-          python3 kits/XnuPrelink/fileset_match.py out/ipsw/24A446/kernelcache.decompressed "$K" --reference-kernel "$R" --out ../p4-report/pairing.json 2>&1 | tee ../p4-report/pairing.log
-          python3 - ../p4-report/pairing.json <<'PY' | tee -a ../p4-report/pairing.log
+          python3 kits/XnuPrelink/fileset_match.py out/ipsw/24A446/kernelcache.decompressed "$K" --reference-kernel "$R" --out ../p4-report/pairing.json 2>&1 | tee ../p4-report/pairing.log || true
+          python3 - "$K" "$R" <<'PY' 2>&1 | tee -a ../p4-report/pairing.log || true
+          import json, sys, traceback
+          from pathlib import Path
+          sys.path.insert(0, 'kits/XnuPrelink')
+          out = Path('../p4-report/p5-unmapped.txt')
+          try:
+              import fileset_match as fm
+              raw = Path('out/ipsw/24A446/kernelcache.decompressed').read_bytes()
+              native = Path(sys.argv[1]).read_bytes()
+              ref = Path(sys.argv[2]).read_bytes()
+              cap = {}
+              original_report = fm.Matcher.report
+              def report(self, data):
+                  cap['matcher'] = self
+                  cap['data'] = data
+                  return original_report(self, data)
+              fm.Matcher.report = report
+              payload = fm.match_images(raw, native, 'com.apple.kernel', 40, ref)
+              m, data = cap['matcher'], cap['data']
+              cache = fm.Image(raw)
+              _, at = cache.entries['com.apple.kernel']
+              entry = fm.Image(raw, at)
+              fixups = cache.fixups()
+              kernel = entry.mapped()
+              inside = lambda a: any(b <= a < e for b, e in kernel)
+              targets = {f[0] for s, f in fixups.items() if inside(f[0]) and not inside(s)}
+              ranges = []
+              for name, value in cache.entries.items():
+                  offset = value[1] if isinstance(value, tuple) else value
+                  try:
+                      for b, e in fm.Image(raw, offset).mapped():
+                          ranges.append((b, e, name))
+                  except Exception:
+                      pass
+              def owner(a):
+                  for b, e, n in ranges:
+                      if b <= a < e:
+                          return n
+                  return '?'
+              sites = {}
+              for s, f in fixups.items():
+                  sites.setdefault(f[0], []).append(s)
+              head = ['# P5 unnamed kext-facing targets',
+                      '# kernelcache_sha256 ' + payload['inputs']['kernelcache_sha256'],
+                      '# native_sha256 ' + payload['inputs']['native_sha256'],
+                      '# kext_targets %d named %d unnamed %d' % (
+                          len(targets),
+                          sum(1 for t in targets if t in m.pairs or (t in data and data[t] and m.native.name_at(data[t][0])[0])),
+                          sum(1 for t in targets if not (t in m.pairs or (t in data and data[t] and m.native.name_at(data[t][0])[0])))),
+                      '# columns: original_target  refs  kext(s)  first_sites',
+                      '']
+              rows = []
+              for t in sorted(targets):
+                  if t in m.pairs or (t in data and data[t] and m.native.name_at(data[t][0])[0]):
+                      continue
+                  ss = sites.get(t, [])
+                  ks = sorted({owner(s) for s in ss})
+                  rows.append('%#x  refs=%d  kexts=%s  sites=%s' % (
+                      t, len(ss), ','.join(ks) or '?', ','.join('%#x' % s for s in ss[:4])))
+              out.write_text('\n'.join(head + rows) + '\n')
+              print('wrote %s: %d unnamed targets (of %d)' % (out, len(rows), len(targets)))
+          except Exception:
+              traceback.print_exc()
+              out.write_text('# FAILED to compute the unnamed list, see the log above\n')
+          PY
+          python3 - ../p4-report/pairing.json <<'PY' | tee -a ../p4-report/pairing.log || true
           import json, sys
           d = json.load(open(sys.argv[1]))
-          print('inputs', d.get('inputs'))
-          print('stats', json.dumps(d.get('stats', {}), indent=1, sort_keys=True))
+          s = d.get('stats', {})
+          print('kext_targets', s.get('kext_targets'), 'named', s.get('kext_targets_named'))
+          print('functions', s.get('functions_matched'), '/', s.get('functions_original'))
           PY
-
+          head -6 ../p4-report/p5-unmapped.txt || true
       - name: Build firmware
         working-directory: unixnu
         run: |
@@ -363,6 +429,9 @@ jobs:
           RID=$(python3 -c "import json;print(json.load(open('../p4-report/release.json'))['id'])")
           cp ../p4-report/boot.json ../p4-report/boot.json.txt
           FILES=("$B" ../p4-report/boot.json.txt ../p4-report/RELEASE.md)
+          for extra in ../p4-report/p5-unmapped.txt ../p4-report/pairing.log; do
+            [ -f "$extra" ] && FILES+=("$extra")
+          done
           if [ -f ../p4-report/userdata-root.json ]; then
             FILES+=(../p4-report/userdata-root.json ../p4-report/userdata-verification.txt)
           fi
