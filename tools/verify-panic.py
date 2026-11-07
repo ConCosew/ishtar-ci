@@ -25,7 +25,7 @@ FRAMES = [
     ("f5", 0xFFFFFFF00AD8F5F0),
 ]
 BASE = 0xFFFFFFF007004000          # __TEXT vmaddr of the emitted kernel
-TARGET_LOW48 = 0x4449DC8           # (unixnu_fileset_unmapped - BASE)
+TARGET_LOW48 = None              # derived from the symbol table below
 
 
 def rule(title):
@@ -242,12 +242,22 @@ def main():
     o = foff(x0)
     print("  file %#x: %r" % (o, macho[o:o + 12]))
 
-    rule("count of slots pointing at the panic stub (independent of the 320 claim)")
+    rule("count of slots pointing at the panic stub (symbol-derived, no hard-coded address)")
+    stub = None
+    for symoff, nsyms, stroff, strsize in symtabs_all:
+        strs = macho[stroff:stroff + strsize]
+        for i in range(nsyms):
+            strx, ntype, nsect, ndesc, nval = struct.unpack_from("<IBBHQ", macho, symoff + i * 16)
+            if nval and strs[strx:strs.find(b"\0", strx)] == b"_unixnu_fileset_unmapped":
+                stub = nval
+    assert stub, "panic stub symbol not found"
+    low = (stub - BASE) & 0xFFFFFFFFFFFF
+    print("  panic stub %#x  low48 %#x" % (stub, low))
     hits = 0
     for off in range(0, len(macho) - 8, 8):
-        if struct.unpack_from("<Q", macho, off)[0] & 0xFFFFFFFFFFFF == TARGET_LOW48:
+        if struct.unpack_from("<Q", macho, off)[0] & 0xFFFFFFFFFFFF == low:
             hits += 1
-    print("  8-byte words with low48 == 0x%x : %d" % (TARGET_LOW48, hits))
+    print("  STUB_SLOTS : %d" % hits)
 
 
 if __name__ == "__main__":
