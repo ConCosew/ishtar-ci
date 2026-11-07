@@ -722,8 +722,13 @@ jobs:
           done
           if [ "$PUBLISH_KERNELCACHE" = true ]; then
             KC=out/ipsw/24A446/kernelcache.decompressed
+          K=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf
+          R=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/build/xnu/fileset-reference/mach.release.bcm2837.unstripped.noctf
+
             MAP=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/kernel/kernel.macho.map.json
             [ -f "$KC" ] && FILES+=("$KC")
+          [ -f "$K" ] && FILES+=("$K")
+          [ -f "$R" ] && FILES+=("$R")
             if [ -f "$MAP" ]; then
               cp "$MAP" ../p4-report/kernel.macho.map.json
               FILES+=(../p4-report/kernel.macho.map.json)
