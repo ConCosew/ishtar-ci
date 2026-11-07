@@ -8,6 +8,10 @@ on:
         description: Build the P3/T8 userdata evidence (never flashed; only JSON leaves the runner)
         type: boolean
         default: false
+      dump_pairing:
+        description: Dump the XnuPrelink kext-facing pairing report (analysis only)
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -26,6 +30,7 @@ jobs:
       GH_PAT: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
       OWNER: ConCosew
       BUILD_USERDATA: ${{ inputs.build_userdata }}
+      DUMP_PAIRING: ${{ inputs.dump_pairing }}
     steps:
       - name: Check out the private UniXNU build tree
         uses: actions/checkout@v4
@@ -264,6 +269,21 @@ jobs:
           K=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/kernel/kernel.macho
           test -f "$K" || { echo "kernel.macho MISSING"; exit 1; }
           echo "kernel.macho $(stat -f%z "$K") bytes sha256 $(shasum -a 256 "$K" | cut -d' ' -f1)" | tee -a ../p4-report/artifacts.txt
+
+      - name: P5 prelink pairing report (analysis only)
+        if: ${{ inputs.dump_pairing }}
+        working-directory: unixnu
+        run: |
+          set -uo pipefail
+          K=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf
+          R=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/build/xnu/fileset-reference/mach.release.bcm2837.unstripped.noctf
+          python3 kits/XnuPrelink/fileset_match.py out/ipsw/24A446/kernelcache.decompressed "$K" --reference-kernel "$R" --out ../p4-report/pairing.json 2>&1 | tee ../p4-report/pairing.log
+          python3 - ../p4-report/pairing.json <<'PY' | tee -a ../p4-report/pairing.log
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          print('inputs', d.get('inputs'))
+          print('stats', json.dumps(d.get('stats', {}), indent=1, sort_keys=True))
+          PY
 
       - name: Build firmware
         working-directory: unixnu
