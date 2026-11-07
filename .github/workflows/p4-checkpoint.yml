@@ -144,12 +144,12 @@ jobs:
           if [ "$BUILD_USERDATA" = true ]; then
             echo "== object names expected by the iOS 27 source storage =="
             python3 - <<'PY'
-            import tomllib
-            from pathlib import Path
-            prof = tomllib.loads(Path('profiles/os/ios-27.0.1-24A446/profile.toml').read_text())
-            names = [w['name'] + '.vroot' for w in prof['userdata']['windows']]
-            assert names == ['OS.vroot', 'SystemOS.vroot'], names
-            print('PREFLIGHT vroot objects OK:', names)
+          import tomllib
+          from pathlib import Path
+          prof = tomllib.loads(Path('profiles/os/ios-27.0.1-24A446/profile.toml').read_text())
+          names = [w['name'] + '.vroot' for w in prof['userdata']['windows']]
+          assert names == ['OS.vroot', 'SystemOS.vroot'], names
+          print('PREFLIGHT vroot objects OK:', names)
           PY
           fi
       - name: Private inputs (live FDT)
