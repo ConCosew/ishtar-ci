@@ -260,7 +260,8 @@ jobs:
             echo "bytes: $(stat -f%z "$B")"
             echo
             echo "header_version=0 (v1 drops USB with the 176 MiB ramdisk)"
-            echo "No sheng-data-persist / sheng-data-reset / native-ufs-root / native-source-storage in kernel args."
+            echo "The default xnu entry carries no sheng-data-persist / sheng-data-reset / native-ufs-root / native-source-storage."
+            echo "WARNING: the Install and boot menu entry adds sheng-data-reset=1/2 and ERASES Android user data. Do not select it."
             echo "payload.adt.persistent_data=false. fastboot boot only; NEVER flash userdata."
             echo
             echo "Run yourself: fastboot boot boot.img"
