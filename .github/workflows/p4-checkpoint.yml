@@ -21,7 +21,7 @@ on:
         type: choice
         options:
           - strict
-          - off
+          - "off"
         default: strict
 permissions:
   contents: read
