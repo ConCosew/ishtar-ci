@@ -16,6 +16,10 @@ on:
         description: Dump original-side call context for the hottest unnamed targets
         type: boolean
         default: false
+      publish_kernelcache:
+        description: Attach the decompressed kernelcache to the private Release (offline analysis)
+        type: boolean
+        default: false
       stub_gate:
         description: strict fails the job while panic stubs remain; off allows a milestone boot.img
         type: choice
@@ -42,6 +46,7 @@ jobs:
       OWNER: ConCosew
       BUILD_USERDATA: ${{ inputs.build_userdata }}
       DUMP_PAIRING: ${{ inputs.dump_pairing }}
+      PUBLISH_KERNELCACHE: ${{ inputs.publish_kernelcache }}
     steps:
       - name: Check out the private UniXNU build tree
         uses: actions/checkout@v4
@@ -715,6 +720,9 @@ jobs:
           for extra in ../p4-report/p5-unmapped.txt ../p4-report/pairing.log ../p4-report/p5-context.txt; do
             [ -f "$extra" ] && FILES+=("$extra")
           done
+          if [ "$PUBLISH_KERNELCACHE" = true ] && [ -f out/ipsw/24A446/kernelcache.decompressed ]; then
+            FILES+=(out/ipsw/24A446/kernelcache.decompressed)
+          fi
           if [ -f ../p4-report/userdata-root.json ]; then
             FILES+=(../p4-report/userdata-root.json ../p4-report/userdata-verification.txt)
           fi
