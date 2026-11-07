@@ -4,6 +4,10 @@ on:
     inputs:
       xcode:
         default: "26.6"
+      build_userdata:
+        description: Build the P3/T8 userdata evidence (never flashed; only JSON leaves the runner)
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -21,6 +25,7 @@ jobs:
       GITHUB_TOKEN: ${{ github.token }}
       GH_PAT: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
       OWNER: ConCosew
+      BUILD_USERDATA: ${{ inputs.build_userdata }}
     steps:
       - name: Check out the private UniXNU build tree
         uses: actions/checkout@v4
@@ -120,6 +125,33 @@ jobs:
                   raise SystemExit(f'{sym} is referenced but stage 0 builds no Adreno740')
           print('PREFLIGHT symbols OK')
           PY
+
+          echo "== P3/T8 userdata static prerequisites =="
+          python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+          prof = tomllib.loads(Path('profiles/os/ios-27.0.1-24A446/profile.toml').read_text())
+          board = tomllib.loads(Path('../device/board.toml').read_text())
+          u = board['userdata']
+          cap = (u['last_lba'] - u['first_lba'] + 1) * u.get('lba_bytes', 4096)
+          w = prof['userdata']['windows']
+          assert w and w[0]['name'] == 'OS', w
+          assert cap > 17 * 2**30, cap
+          assert Path('scripts/unixnu/userdata.py').is_file()
+          print('PREFLIGHT userdata OK: capacity %.1f GiB, windows %s' % (cap / 2**30, [x['name'] for x in w]))
+          PY
+
+          if [ "$BUILD_USERDATA" = true ]; then
+            echo "== object names expected by the iOS 27 source storage =="
+            python3 - <<'PY'
+            import tomllib
+            from pathlib import Path
+            prof = tomllib.loads(Path('profiles/os/ios-27.0.1-24A446/profile.toml').read_text())
+            names = [w['name'] + '.vroot' for w in prof['userdata']['windows']]
+            assert names == ['OS.vroot', 'SystemOS.vroot'], names
+            print('PREFLIGHT vroot objects OK:', names)
+          PY
+          fi
       - name: Private inputs (live FDT)
         working-directory: unixnu
         run: |
@@ -179,6 +211,41 @@ jobs:
           done
           echo "T5/T6 PASS" | tee -a ../p4-report/build.log
 
+      - name: P3/T8 userdata evidence (never flashed)
+        if: ${{ inputs.build_userdata }}
+        working-directory: unixnu
+        run: |
+          set -euo pipefail
+          FREE=$(df -k . | tail -1 | awk '{print $4}')
+          echo "free disk: $FREE KiB"
+          test "$FREE" -gt 25000000 || { echo "insufficient disk for the 16 GiB userdata image"; exit 1; }
+          OUT=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/build/verified-root-24A446
+          for n in OS SystemOS; do
+            test -s "$OUT/$n/hashes.bin" || { echo "MISSING $n/hashes.bin"; exit 1; }
+          done
+          ./unixnu build userdata --dry-run -D ../device 2>&1 | tee -a ../p4-report/build.log
+          ./unixnu build userdata -D ../device \
+            --object "OS.vroot=$OUT/OS/hashes.bin" \
+            --object "SystemOS.vroot=$OUT/SystemOS/hashes.bin" 2>&1 | tee -a ../p4-report/build.log
+          U=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/userdata/userdata-root.json
+          test -f "$U" || { echo "userdata-root.json MISSING"; exit 1; }
+          cp "$U" ../p4-report/userdata-root.json
+          python3 - <<'PY' | tee ../p4-report/userdata-verification.txt
+          import json
+          d = json.load(open('../p4-report/userdata-root.json'))
+          print('image_bytes   =', d['image_bytes'])
+          print('image_sha256  =', d['image_sha256'])
+          print('userdata_bytes=', d['userdata_bytes'])
+          for w in d['windows']:
+              print('window', w['name'], w['offset'], w['size'])
+          for o in d['objects']:
+              print('object', o['name'], o['offset'], o['size'])
+          assert d['image_bytes'] <= d['userdata_bytes']
+          assert len(d['windows']) >= 1
+          names = {o['name'] for o in d['objects']}
+          assert {'OS.vroot', 'SystemOS.vroot'} <= names, names
+          print('USERDATA PASS (not flashed)')
+          PY
       - name: Init uefi submodules and link the private Binaries
         working-directory: uefi-ishtar
         run: |
@@ -275,7 +342,11 @@ jobs:
             "https://api.github.com/repos/$OWNER/ishtar-device/releases" -d "$payload" > ../p4-report/release.json
           RID=$(python3 -c "import json;print(json.load(open('../p4-report/release.json'))['id'])")
           cp ../p4-report/boot.json ../p4-report/boot.json.txt
-          for f in "$B" ../p4-report/boot.json.txt ../p4-report/RELEASE.md; do
+          FILES=("$B" ../p4-report/boot.json.txt ../p4-report/RELEASE.md)
+          if [ -f ../p4-report/userdata-root.json ]; then
+            FILES+=(../p4-report/userdata-root.json ../p4-report/userdata-verification.txt)
+          fi
+          for f in "${FILES[@]}"; do
             n=$(basename "$f")
             curl -fsSL -X POST -H "Authorization: Bearer $GH_PAT" -H "Content-Type: application/octet-stream" \
               "https://uploads.github.com/repos/$OWNER/ishtar-device/releases/$RID/assets?name=$n" \
@@ -294,6 +365,7 @@ jobs:
             cat p4-report/artifacts.txt 2>/dev/null || true
             cat p4-report/safety.txt 2>/dev/null || true
             cat p4-report/boot-verification.txt 2>/dev/null || true
+            cat p4-report/userdata-verification.txt 2>/dev/null || true
             cat p4-report/release.txt 2>/dev/null || true
             echo
             echo "Private sources: ConCosew/ishtar-unixnu, ishtar-device, ishtar-uefi, ishtar-device-binaries."
