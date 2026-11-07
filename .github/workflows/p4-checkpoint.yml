@@ -97,6 +97,7 @@ jobs:
           print('PREFLIGHT pin OK')
           PY
           echo "== GopFramebuffer source symbols =="
+          git submodule update --init --depth 1 drivers/GopFramebuffer 2>&1 | tail -2
           python3 - <<'PY'
           import subprocess
           from pathlib import Path
