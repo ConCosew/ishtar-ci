@@ -734,13 +734,20 @@ jobs:
             echo "bytes: $(stat -f%z "$B")"
             echo
             echo "header_version=0 (v1 drops USB with the 176 MiB ramdisk)"
-            echo "The default xnu entry carries no sheng-data-persist / sheng-data-reset / native-ufs-root / native-source-storage."
-            echo "WARNING: the Install and boot menu entry adds sheng-data-reset=1/2 and ERASES Android user data. Do not select it."
-            echo "payload.adt.persistent_data=false. fastboot boot only; NEVER flash userdata."
-            echo
-            echo "Run yourself: fastboot boot boot.img"
-            echo "Expected: UniXNU menu -> DarwinBoot -> first -v XNU console line."
-            echo "UFS root mount will fail; that is the checkpoint boundary."
+            if [ "${{ inputs.device_ref }}" = "safe-checkpoint" ]; then
+              echo "The default xnu entry carries no sheng-data-persist / sheng-data-reset / native-ufs-root / native-source-storage."
+              echo "WARNING: the Install and boot menu entry adds sheng-data-reset=1/2 and ERASES Android user data. Do not select it."
+              echo "payload.adt.persistent_data=false. fastboot boot only; NEVER flash userdata."
+              echo
+              echo "Run yourself: fastboot boot boot.img"
+              echo "Expected: UniXNU menu -> DarwinBoot -> first -v XNU console line."
+              echo "UFS root mount will fail; that is the checkpoint boundary."
+            else
+              echo "DUAL BOOT (device_ref=${{ inputs.device_ref }}): userdata points at ios_root (sda31, 200 GiB)."
+              echo "Root-write args (native-ufs-root / native-source-storage / sheng-data-persist) are EXPECTED."
+              echo "Android userdata is a separate, rebuilt sda30. Never run fastboot flash userdata."
+              [ -f ../p4-report/USERDATA-ASSEMBLE.txt ] && cat ../p4-report/USERDATA-ASSEMBLE.txt
+            fi
           } > ../p4-report/RELEASE.md
           cat ../p4-report/RELEASE.md
           payload=$(python3 -c "import json;print(json.dumps({'tag_name':'$TAG','name':'ishtar safe checkpoint (private)','body':open('../p4-report/RELEASE.md').read(),'draft':False,'prerelease':True}))")
@@ -778,7 +785,7 @@ jobs:
             n=$(basename "$f")
             curl -fsSL -X POST -H "Authorization: Bearer $GH_PAT" -H "Content-Type: application/octet-stream" \
               "https://uploads.github.com/repos/$OWNER/ishtar-device/releases/$RID/assets?name=$n" \
-              --data-binary "@$f" > /dev/null
+              -T "$f" > /dev/null
           done
           echo "RELEASE tag=$TAG id=$RID" | tee ../p4-report/release.txt
 
