@@ -315,14 +315,24 @@ jobs:
           cp fixtures/fileset-fa07057b-symbols.json kits/XnuPrelink/fixtures/
           ls -l kits/XnuPrelink/fixtures/
       - name: P5 UFS root partition name
-        if: ${{ inputs.root_partition_name != 'userdata' }}
+        if: ${{ inputs.device_ref == 'dual-boot' }}
         working-directory: unixnu
         run: |
           set -euo pipefail
           F=drivers/ShengUfs/RootLayout.h
           test -f "$F" || { echo "RootLayout.h MISSING (fetch did not populate ShengUfs)"; exit 1; }
           grep -q 'static const char wanted\[\] = "userdata";' "$F" || { echo "unexpected RootLayout.h"; exit 1; }
-          sed -i '' "s/static const char wanted\[\] = \"userdata\";/static const char wanted[] = \"${{ inputs.root_partition_name }}\";/" "$F" 2>/dev/null ||             sed -i "s/static const char wanted\[\] = \"userdata\";/static const char wanted[] = \"${{ inputs.root_partition_name }}\";/" "$F"
+          python3 - "$F" "$ROOT_PARTITION_NAME" <<'PY'
+          import sys
+          p, name = sys.argv[1], sys.argv[2]
+          old = '"userdata";'
+          new = '"%s";' % name
+          s = open(p).read()
+          assert s.count('static const char wanted[] = ' + old) == 1, 'unexpected RootLayout.h'
+          open(p, 'w').write(s.replace('static const char wanted[] = ' + old,
+                                       'static const char wanted[] = ' + new, 1))
+          print('root partition name ->', name)
+          PY
           grep -n 'static const char wanted' "$F"
       - name: Build kernel
         working-directory: unixnu
