@@ -8,6 +8,13 @@ on:
         description: Device repository ref (dual-boot points userdata at ios_root)
         type: string
         default: safe-checkpoint
+      root_partition_name:
+        description: GPT partition name the UFS root driver looks for (dual-boot uses ios_root)
+        type: choice
+        options:
+          - userdata
+          - ios_root
+        default: userdata
       publish_userdata_image:
         description: Attach the real userdata-root.img to the private Release (16 GiB, user downloads)
         type: boolean
@@ -56,6 +63,7 @@ jobs:
       DUMP_PAIRING: ${{ inputs.dump_pairing }}
       PUBLISH_KERNELCACHE: ${{ inputs.publish_kernelcache }}
       PUBLISH_USERDATA_IMAGE: ${{ inputs.publish_userdata_image }}
+      ROOT_PARTITION_NAME: ${{ inputs.root_partition_name }}
     steps:
       - name: Check out the private UniXNU build tree
         uses: actions/checkout@v4
@@ -306,6 +314,16 @@ jobs:
           mkdir -p kits/XnuPrelink/fixtures
           cp fixtures/fileset-fa07057b-symbols.json kits/XnuPrelink/fixtures/
           ls -l kits/XnuPrelink/fixtures/
+      - name: P5 UFS root partition name
+        if: ${{ inputs.root_partition_name != 'userdata' }}
+        working-directory: unixnu
+        run: |
+          set -euo pipefail
+          F=drivers/ShengUfs/RootLayout.h
+          test -f "$F" || { echo "RootLayout.h MISSING (fetch did not populate ShengUfs)"; exit 1; }
+          grep -q 'static const char wanted\[\] = "userdata";' "$F" || { echo "unexpected RootLayout.h"; exit 1; }
+          sed -i '' "s/static const char wanted\[\] = \"userdata\";/static const char wanted[] = \"${{ inputs.root_partition_name }}\";/" "$F" 2>/dev/null ||             sed -i "s/static const char wanted\[\] = \"userdata\";/static const char wanted[] = \"${{ inputs.root_partition_name }}\";/" "$F"
+          grep -n 'static const char wanted' "$F"
       - name: Build kernel
         working-directory: unixnu
         run: |
