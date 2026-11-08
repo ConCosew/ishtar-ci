@@ -263,8 +263,15 @@ jobs:
           if [ "$PUBLISH_USERDATA_IMAGE" = true ]; then
             IMG=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/userdata/userdata-root.img
             test -f "$IMG" || { echo "userdata-root.img MISSING"; exit 1; }
-            cp "$IMG" ../p4-report/userdata-root.img
-            echo "userdata-root.img $(stat -f%z ../p4-report/userdata-root.img) bytes sha256 $(shasum -a 256 ../p4-report/userdata-root.img | cut -d' ' -f1)" | tee -a ../p4-report/artifacts.txt
+            FULL=$(shasum -a 256 "$IMG" | cut -d' ' -f1)
+            SIZE=$(stat -f%z "$IMG")
+            echo "userdata-root.img $SIZE bytes sha256 $FULL" | tee -a ../p4-report/artifacts.txt
+            # GitHub Release assets are limited to 2 GB; split into 1 GiB parts.
+            split -b 1073741824 -d -a 3 "$IMG" ../p4-report/userdata-root.img.part
+            { echo "userdata-root.img"; echo "bytes=$SIZE"; echo "sha256=$FULL";
+              echo "parts=1GiB each, concatenate in numeric order: cat userdata-root.img.part* > userdata-root.img";
+              for p in ../p4-report/userdata-root.img.part*; do echo "$(basename "$p") $(stat -f%z "$p") $(shasum -a 256 "$p" | cut -d' ' -f1)"; done;
+            } > ../p4-report/USERDATA-ASSEMBLE.txt
           fi
           python3 - <<'PY' | tee ../p4-report/userdata-verification.txt
           import json
@@ -760,9 +767,10 @@ jobs:
               FILES+=(../p4-report/kernel.macho.map.json)
             fi
           fi
-          if [ -f ../p4-report/userdata-root.img ]; then
-            FILES+=(../p4-report/userdata-root.img)
-          fi
+          for part in ../p4-report/userdata-root.img.part*; do
+            [ -f "$part" ] && FILES+=("$part")
+          done
+          [ -f ../p4-report/USERDATA-ASSEMBLE.txt ] && FILES+=(../p4-report/USERDATA-ASSEMBLE.txt)
           if [ -f ../p4-report/userdata-root.json ]; then
             FILES+=(../p4-report/userdata-root.json ../p4-report/userdata-verification.txt)
           fi
