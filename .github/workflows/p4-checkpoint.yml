@@ -4,6 +4,14 @@ on:
     inputs:
       xcode:
         default: "26.6"
+      device_ref:
+        description: Device repository ref (dual-boot points userdata at ios_root)
+        type: string
+        default: safe-checkpoint
+      publish_userdata_image:
+        description: Attach the real userdata-root.img to the private Release (16 GiB, user downloads)
+        type: boolean
+        default: false
       build_userdata:
         description: Build the P3/T8 userdata evidence (never flashed; only JSON leaves the runner)
         type: boolean
@@ -47,6 +55,7 @@ jobs:
       BUILD_USERDATA: ${{ inputs.build_userdata }}
       DUMP_PAIRING: ${{ inputs.dump_pairing }}
       PUBLISH_KERNELCACHE: ${{ inputs.publish_kernelcache }}
+      PUBLISH_USERDATA_IMAGE: ${{ inputs.publish_userdata_image }}
     steps:
       - name: Check out the private UniXNU build tree
         uses: actions/checkout@v4
@@ -61,7 +70,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ConCosew/ishtar-device
-          ref: safe-checkpoint
+          ref: ${{ inputs.device_ref }}
           token: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
           path: device
           persist-credentials: false
@@ -251,6 +260,12 @@ jobs:
           U=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/userdata/userdata-root.json
           test -f "$U" || { echo "userdata-root.json MISSING"; exit 1; }
           cp "$U" ../p4-report/userdata-root.json
+          if [ "$PUBLISH_USERDATA_IMAGE" = true ]; then
+            IMG=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/userdata/userdata-root.img
+            test -f "$IMG" || { echo "userdata-root.img MISSING"; exit 1; }
+            cp "$IMG" ../p4-report/userdata-root.img
+            echo "userdata-root.img $(stat -f%z ../p4-report/userdata-root.img) bytes sha256 $(shasum -a 256 ../p4-report/userdata-root.img | cut -d' ' -f1)" | tee -a ../p4-report/artifacts.txt
+          fi
           python3 - <<'PY' | tee ../p4-report/userdata-verification.txt
           import json
           d = json.load(open('../p4-report/userdata-root.json'))
@@ -740,6 +755,9 @@ jobs:
               cp "$MAP" ../p4-report/kernel.macho.map.json
               FILES+=(../p4-report/kernel.macho.map.json)
             fi
+          fi
+          if [ -f ../p4-report/userdata-root.img ]; then
+            FILES+=(../p4-report/userdata-root.img)
           fi
           if [ -f ../p4-report/userdata-root.json ]; then
             FILES+=(../p4-report/userdata-root.json ../p4-report/userdata-verification.txt)
