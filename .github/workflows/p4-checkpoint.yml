@@ -685,7 +685,11 @@ jobs:
           for bad in sheng-data-persist sheng-data-reset native-ufs-root native-source-storage; do
             if grep -q "$bad" "$P"; then echo "UNSAFE $bad present" | tee -a ../p4-report/safety.txt; else echo "SAFE $bad absent" | tee -a ../p4-report/safety.txt; fi
           done
-          ! grep -q -E 'sheng-data-persist|sheng-data-reset|native-ufs-root|native-source-storage' "$P"
+          if [ "${{ inputs.device_ref }}" = "safe-checkpoint" ]; then
+            ! grep -q -E 'sheng-data-persist|sheng-data-reset|native-ufs-root|native-source-storage' "$P"
+          else
+            echo "dual-boot/persistent root: root-write args are expected on ${{ inputs.device_ref }}"
+          fi
 
       - name: bootimg (header v0)
         working-directory: unixnu
