@@ -310,6 +310,7 @@ jobs:
           set -euo pipefail
           CFG=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/.config
           SEEDDIR=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/data-seed
+          test -f drivers/DarwinBoot/Test/packed_ramdisk.py || { echo "FATAL: DarwinBoot/Test/packed_ramdisk.py missing (submodule not initialised)"; exit 1; }
           python3 "${{ github.workspace }}/ishtar-ci/tools/ci-data-seed.py" --device ../device --unixnu . --config "$CFG" --out "$SEEDDIR" 2>&1 | tee ../p4-report/data-seed.log
           grep '^DATA_SEED=' ../p4-report/data-seed.log | tail -1 > ../p4-report/data-seed.path
           test -s ../p4-report/data-seed.path || { echo "FATAL: no DATA_SEED"; exit 1; }
