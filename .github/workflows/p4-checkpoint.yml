@@ -319,28 +319,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          python3 - "$ROOT_PARTITION_NAME" <<'PY'
-          import os, sys
-          name = sys.argv[1]
-          needle = 'static const char wanted[] = "userdata";'
-          replacement = 'static const char wanted[] = "%s";' % name
-          hits = []
-          for root, dirs, files in os.walk('.'):
-              if 'RootLayout.h' in files:
-                  p = os.path.join(root, 'RootLayout.h')
-                  s = open(p, encoding='utf-8').read()
-                  if needle in s:
-                      hits.append(p)
-                      open(p, 'w', encoding='utf-8').write(s.replace(needle, replacement))
-                      print('PATCHED', p, '->', name)
-          if not hits:
-              print('FATAL: no RootLayout.h with the expected declaration was found')
-              for root, dirs, files in os.walk('.'):
-                  if 'RootLayout.h' in files:
-                      print('  CANDIDATE', os.path.join(root, 'RootLayout.h'))
-              raise SystemExit(1)
-          print('patched', len(hits), 'file(s)')
-          PY
+          python3 ishtar-ci/tools/patch-ufs.py "$ROOT_PARTITION_NAME"
       - name: Build kernel
         working-directory: unixnu
         run: |
