@@ -316,24 +316,31 @@ jobs:
           ls -l kits/XnuPrelink/fixtures/
       - name: P5 UFS root partition name
         if: ${{ inputs.device_ref == 'dual-boot' }}
-        working-directory: unixnu
+        working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          F=drivers/ShengUfs/RootLayout.h
-          test -f "$F" || { echo "RootLayout.h MISSING (fetch did not populate ShengUfs)"; exit 1; }
-          grep -q 'static const char wanted\[\] = "userdata";' "$F" || { echo "unexpected RootLayout.h"; exit 1; }
-          python3 - "$F" "$ROOT_PARTITION_NAME" <<'PY'
-          import sys
-          p, name = sys.argv[1], sys.argv[2]
-          old = '"userdata";'
-          new = '"%s";' % name
-          s = open(p).read()
-          assert s.count('static const char wanted[] = ' + old) == 1, 'unexpected RootLayout.h'
-          open(p, 'w').write(s.replace('static const char wanted[] = ' + old,
-                                       'static const char wanted[] = ' + new, 1))
-          print('root partition name ->', name)
+          python3 - "$ROOT_PARTITION_NAME" <<'PY'
+          import os, sys
+          name = sys.argv[1]
+          needle = 'static const char wanted[] = "userdata";'
+          replacement = 'static const char wanted[] = "%s";' % name
+          hits = []
+          for root, dirs, files in os.walk('.'):
+              if 'RootLayout.h' in files:
+                  p = os.path.join(root, 'RootLayout.h')
+                  s = open(p, encoding='utf-8').read()
+                  if needle in s:
+                      hits.append(p)
+                      open(p, 'w', encoding='utf-8').write(s.replace(needle, replacement))
+                      print('PATCHED', p, '->', name)
+          if not hits:
+              print('FATAL: no RootLayout.h with the expected declaration was found')
+              for root, dirs, files in os.walk('.'):
+                  if 'RootLayout.h' in files:
+                      print('  CANDIDATE', os.path.join(root, 'RootLayout.h'))
+              raise SystemExit(1)
+          print('patched', len(hits), 'file(s)')
           PY
-          grep -n 'static const char wanted' "$F"
       - name: Build kernel
         working-directory: unixnu
         run: |
