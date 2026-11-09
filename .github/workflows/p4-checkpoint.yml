@@ -724,7 +724,7 @@ jobs:
           SEED=$(sed 's/^DATA_SEED=//' ../p4-report/data-seed.path)
           test -s "$SEED" || { echo "FATAL: Data seed missing for payload: $SEED"; exit 1; }
           ./unixnu build payload -D ../device --trust-cache "$TC" \
-            \
+
             --data-ramdisk "$SEED" \
             --unique-chip-id "$UNIXNU_UNIQUE_CHIP_ID" 2>&1 | tee -a ../p4-report/build.log
           P=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/payload/payload.json
