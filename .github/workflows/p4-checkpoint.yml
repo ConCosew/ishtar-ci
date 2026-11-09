@@ -64,6 +64,7 @@ jobs:
       PUBLISH_KERNELCACHE: ${{ inputs.publish_kernelcache }}
       PUBLISH_USERDATA_IMAGE: ${{ inputs.publish_userdata_image }}
       ROOT_PARTITION_NAME: ${{ inputs.root_partition_name }}
+      UNIXNU_KERNELCACHE: ${{ github.workspace }}/unixnu/out/ipsw/24A446/kernelcache.decompressed
     steps:
       - name: Check out the private UniXNU build tree
         uses: actions/checkout@v4
@@ -330,6 +331,8 @@ jobs:
         working-directory: unixnu
         run: |
           set -uo pipefail
+          test -s "$UNIXNU_KERNELCACHE" || { echo "FATAL: local kernelcache missing: $UNIXNU_KERNELCACHE"; exit 1; }
+          echo "prelink will use local kernelcache: $UNIXNU_KERNELCACHE ($(stat -f%z "$UNIXNU_KERNELCACHE") bytes)"
           ./unixnu build kernel -D ../device 2>&1 | tee -a ../p4-report/build.log
           K=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/kernel/kernel.macho
           test -f "$K" || { echo "kernel.macho MISSING"; exit 1; }
