@@ -94,6 +94,12 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Check out this workflow's tools
+        uses: actions/checkout@v4
+        with:
+          path: ishtar-ci
+          persist-credentials: false
+
       - name: Host tools
         run: |
           set -euo pipefail
@@ -319,7 +325,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          python3 ishtar-ci/tools/patch-ufs.py "$ROOT_PARTITION_NAME"
+          python3 "${{ github.workspace }}/ishtar-ci/tools/patch-ufs.py" "$ROOT_PARTITION_NAME"
       - name: Build kernel
         working-directory: unixnu
         run: |
