@@ -310,7 +310,7 @@ jobs:
           set -euo pipefail
           CFG=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/.config
           SEEDDIR=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/data-seed
-          python3 "${{ github.workspace }}/ishtar-ci/tools/ci-data-seed.py"             --device ../device --unixnu . --config "$CFG" --out "$SEEDDIR"             2>&1 | tee ../p4-report/data-seed.log
+          python3 "${{ github.workspace }}/ishtar-ci/tools/ci-data-seed.py" --device ../device --unixnu . --config "$CFG" --out "$SEEDDIR" 2>&1 | tee ../p4-report/data-seed.log
           grep '^DATA_SEED=' ../p4-report/data-seed.log | tail -1 > ../p4-report/data-seed.path
           test -s ../p4-report/data-seed.path || { echo "FATAL: no DATA_SEED"; exit 1; }
           SEED=$(sed 's/^DATA_SEED=//' ../p4-report/data-seed.path)
@@ -723,10 +723,7 @@ jobs:
           TC=build/original-static-system-trust/original-static-system.bundle
           SEED=$(sed 's/^DATA_SEED=//' ../p4-report/data-seed.path)
           test -s "$SEED" || { echo "FATAL: Data seed missing for payload: $SEED"; exit 1; }
-          ./unixnu build payload -D ../device --trust-cache "$TC" \
-
-            --data-ramdisk "$SEED" \
-            --unique-chip-id "$UNIXNU_UNIQUE_CHIP_ID" 2>&1 | tee -a ../p4-report/build.log
+          ./unixnu build payload -D ../device --trust-cache "$TC" --data-ramdisk "$SEED" --unique-chip-id "$UNIXNU_UNIQUE_CHIP_ID" 2>&1 | tee -a ../p4-report/build.log
           P=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/payload/payload.json
           test -f "$P" || { echo "payload.json MISSING"; exit 1; }
           echo "== kernel arg safety ==" | tee ../p4-report/safety.txt
