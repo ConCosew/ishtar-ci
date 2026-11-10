@@ -8,6 +8,10 @@ on:
         description: Device repository ref (dual-boot points userdata at ios_root)
         type: string
         default: safe-checkpoint
+      unixnu_ref:
+        description: UniXNU build-tree ref (gpu-stage3 carries the D94AP accelerator record)
+        type: string
+        default: ishtar-build
       root_partition_name:
         description: GPT partition name the UFS root driver looks for (dual-boot uses ios_root)
         type: choice
@@ -70,7 +74,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ConCosew/ishtar-unixnu
-          ref: ishtar-build
+          ref: ${{ inputs.unixnu_ref }}
           token: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
           path: unixnu
           fetch-depth: 0
