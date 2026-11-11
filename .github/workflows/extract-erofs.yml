@@ -1,0 +1,116 @@
+name: extract-offline-erofs-inputs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
+      OWNER: ConCosew
+      REPO: ishtar-device
+      TAG: rom-erofs-inputs-2026-11-12
+    steps:
+      - name: Host tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zstd erofs-utils curl jq
+          zstd --version
+          dump.erofs --version || true
+
+      - name: Download compressed logical partitions
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          api="https://api.github.com/repos/$OWNER/$REPO/releases/tags/$TAG"
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$api" > work/release.json
+          jq -r '.assets[].name' work/release.json | sort > work/assets.txt
+          cat work/assets.txt
+          for n in $(grep '\.part[0-9][0-9][0-9]$' work/assets.txt || true); do
+            id=$(jq -r --arg n "$n" '.assets[] | select(.name==$n) | .id' work/release.json)
+            curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" \
+              "https://api.github.com/repos/$OWNER/$REPO/releases/assets/$id" -o "work/$n"
+          done
+          cat work/vendor_a.img.zst.part* > work/vendor_a.img.zst
+          cat work/odm_a.img.zst.part* > work/odm_a.img.zst
+          zstd -d -f work/vendor_a.img.zst -o work/vendor_a.img
+          zstd -d -f work/odm_a.img.zst -o work/odm_a.img
+          ls -lh work/*.img
+
+      - name: EROFS superblock sanity
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import struct
+          for n in ('vendor_a','odm_a'):
+              p='work/'+n+'.img'
+              with open(p,'rb') as f: d=f.read(1152)
+              magic=struct.unpack_from('<I',d,1024)[0]
+              print(n, hex(magic), 'blkszbits', d[1024+12])
+              assert magic==0xe0f5e1e2, (n,hex(magic))
+          PY
+
+      - name: Extract target firmware files
+        run: |
+          set -euo pipefail
+          mkdir -p extracted
+          # dump.erofs can list/extract by path; also keep a full file list for evidence.
+          for n in vendor_a odm_a; do
+            dump.erofs --ls "work/$n.img" > "extracted/$n.files.txt" || true
+            wc -l "extracted/$n.files.txt"
+          done
+          python3 - <<'PY'
+          import os,re,shutil,subprocess
+          from pathlib import Path
+          targets=[
+            'a740_zap','a740_sqe.fw','gmu_gen70200.bin','a702_zap','a630_gmu.bin',
+            'st_fts_m1.ftb','stm_fts_production_limits.csv','mdss_dsi_m1_42_02_0a_dsc_cmd_mi.xml',
+            'wcn7850','bdwlan','hmtbtfw','battmgr','adspr.jsn','uefipil.cfg','Panel_',
+          ]
+          out=Path('extracted/files');out.mkdir(parents=True,exist_ok=True)
+          for part in ('vendor_a','odm_a'):
+            img=f'work/{part}.img'
+            # Try dump.erofs extraction of entire image into a scratch tree, then copy matching small files.
+            scratch=Path('extracted/scratch')/part
+            scratch.mkdir(parents=True,exist_ok=True)
+            r=subprocess.run(['dump.erofs','--extract','--path=/', '--dest='+str(scratch),img],capture_output=True,text=True)
+            print(part,'dump.erofs rc',r.returncode,r.stdout[-300:],r.stderr[-300:])
+            if r.returncode!=0: continue
+            for p in scratch.rglob('*'):
+              if not p.is_file():continue
+              name=p.name.lower()
+              if any(t.lower() in name for t in targets):
+                dest=out/part/p.relative_to(scratch)
+                dest.parent.mkdir(parents=True,exist_ok=True)
+                shutil.copyfile(p,dest)
+                print('OK',dest,p.stat().st_size)
+          PY
+          du -sh extracted
+          find extracted/files -type f -printf '%p %s\n' | sort | tee extracted/files.manifest.txt
+
+      - name: Upload extracted inputs to the private Release
+        run: |
+          set -euo pipefail
+          # Pack only small extracted files and evidence lists (never the partition images).
+          tar -czf erofs-extracted.tar.gz -C extracted files files.manifest.txt vendor_a.files.txt odm_a.files.txt
+          sha256sum erofs-extracted.tar.gz | tee erofs-extracted.sha256
+          upload="https://uploads.github.com/repos/$OWNER/$REPO/releases/tags/$TAG/assets"
+          # Remove previous result assets of the same names if present.
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$OWNER/$REPO/releases/tags/$TAG" > release.json
+          for n in erofs-extracted.tar.gz erofs-extracted.sha256; do
+            id=$(jq -r --arg n "$n" '.assets[] | select(.name==$n) | .id' release.json || true)
+            if [ -n "$id" ] && [ "$id" != null ]; then
+              curl -fsSL -X DELETE -H "Authorization: Bearer $GH_TOKEN" \
+                "https://api.github.com/repos/$OWNER/$REPO/releases/assets/$id" || true
+            fi
+            curl -fsSL -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/gzip" \
+              --data-binary @"$n" "$upload?name=$n" >/dev/null
+            echo "uploaded $n"
+          done
