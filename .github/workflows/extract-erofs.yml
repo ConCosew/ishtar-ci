@@ -106,10 +106,12 @@ jobs:
           # Pack only small extracted files and evidence lists (never the partition images).
           tar -czf erofs-extracted.tar.gz -C extracted files files.manifest.txt vendor_a.files.txt odm_a.files.txt
           sha256sum erofs-extracted.tar.gz | tee erofs-extracted.sha256
-          upload="https://uploads.github.com/repos/$OWNER/$REPO/releases/tags/$TAG/assets"
+          # upload URL is set from the numeric release id below
           # Remove previous result assets of the same names if present.
           curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
             "https://api.github.com/repos/$OWNER/$REPO/releases/tags/$TAG" > release.json
+          relid=$(jq -r '.id' release.json)
+          upload="https://uploads.github.com/repos/$OWNER/$REPO/releases/$relid/assets"
           for n in erofs-extracted.tar.gz erofs-extracted.sha256; do
             id=$(jq -r --arg n "$n" '.assets[] | select(.name==$n) | .id' release.json || true)
             if [ -n "$id" ] && [ "$id" != null ]; then
