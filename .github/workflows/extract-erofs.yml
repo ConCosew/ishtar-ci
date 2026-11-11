@@ -68,6 +68,17 @@ jobs:
           python3 - <<'PY'
           import os,re,shutil,subprocess
           from pathlib import Path
+          # First extract the whole EROFS tree with fsck.erofs --extract=...
+          for part in ('vendor_a','odm_a'):
+            img=f'work/{part}.img'
+            scratch=Path('extracted/scratch')/part
+            scratch.mkdir(parents=True,exist_ok=True)
+            r=subprocess.run(['fsck.erofs','--extract='+str(scratch),img],capture_output=True,text=True)
+            print(part,'fsck.erofs rc',r.returncode,r.stdout[-300:],r.stderr[-300:])
+            if r.returncode!=0:
+              print('fsck.erofs extraction failed; falling back to dump.erofs --path=/')
+              r2=subprocess.run(['dump.erofs','--path=/','--ls',img],capture_output=True,text=True)
+              print('dump.erofs --ls /:',r2.stdout[:500],r2.stderr[:300])
           targets=[
             'a740_zap','a740_sqe.fw','gmu_gen70200.bin','a702_zap','a630_gmu.bin',
             'st_fts_m1.ftb','stm_fts_production_limits.csv','mdss_dsi_m1_42_02_0a_dsc_cmd_mi.xml',
@@ -75,13 +86,8 @@ jobs:
           ]
           out=Path('extracted/files');out.mkdir(parents=True,exist_ok=True)
           for part in ('vendor_a','odm_a'):
-            img=f'work/{part}.img'
-            # Try dump.erofs extraction of entire image into a scratch tree, then copy matching small files.
             scratch=Path('extracted/scratch')/part
-            scratch.mkdir(parents=True,exist_ok=True)
-            r=subprocess.run(['dump.erofs','--extract','--path=/', '--dest='+str(scratch),img],capture_output=True,text=True)
-            print(part,'dump.erofs rc',r.returncode,r.stdout[-300:],r.stderr[-300:])
-            if r.returncode!=0: continue
+            if not scratch.exists(): continue
             for p in scratch.rglob('*'):
               if not p.is_file():continue
               name=p.name.lower()
@@ -110,7 +116,7 @@ jobs:
               curl -fsSL -X DELETE -H "Authorization: Bearer $GH_TOKEN" \
                 "https://api.github.com/repos/$OWNER/$REPO/releases/assets/$id" || true
             fi
-            curl -fsSL -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/gzip" \
-              --data-binary @"$n" "$upload?name=$n" >/dev/null
+            curl -fsSL -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/octet-stream" \
+              -T "$n" "$upload?name=$n" >/dev/null
             echo "uploaded $n"
           done
