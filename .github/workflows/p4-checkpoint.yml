@@ -308,6 +308,22 @@ jobs:
           assert {'OS.vroot', 'SystemOS.vroot'} <= names, names
           print('USERDATA PASS (not flashed)')
           PY
+      - name: Stage offline GPU firmware
+        if: ${{ inputs.device_ref == 'gpu-stage3' }}
+        working-directory: unixnu
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/$OWNER/ishtar-device/releases/tags/rom-erofs-inputs-2026-11-12"
+          curl -fsSL -H "Authorization: Bearer $GH_PAT" "$api" > ../gpu-fw-release.json
+          id=$(python3 -c "import json;print([a['id'] for a in json.load(open('../gpu-fw-release.json'))['assets'] if a['name']=='ishtar-gpu-firmware.tar.gz'][0])")
+          mkdir -p .cache/firmware/sheng-gpu
+          curl -fsSL -H "Authorization: Bearer $GH_PAT" -H "Accept: application/octet-stream"             "https://api.github.com/repos/$OWNER/ishtar-device/releases/assets/$id" -o ../ishtar-gpu-firmware.tar.gz
+          tar -xzf ../ishtar-gpu-firmware.tar.gz -C .cache/firmware/sheng-gpu
+          find .cache/firmware/sheng-gpu -type f | sort
+          test -s .cache/firmware/sheng-gpu/qcom/gmu_gen70200.bin
+          test -s .cache/firmware/sheng-gpu/qcom/a740_sqe.fw
+          test -s .cache/firmware/sheng-gpu/qcom/sm8550/sheng/a740_zap.mbn
+
       - name: Build the Data seed
         working-directory: unixnu
         run: |
