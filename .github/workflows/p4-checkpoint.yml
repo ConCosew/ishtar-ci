@@ -350,7 +350,11 @@ jobs:
           cp -a .cache/adreno-source/. "$tree/.cache/adreno-source/"
           cp -a .cache/linux-dts/. "$tree/.cache/linux-dts/"
           cp -a .cache/firmware/sheng-gpu/. "$tree/.cache/firmware/sheng-gpu/"
+          mkdir -p "$tree/kits/sheng"
+          cp kits/sheng/ShengGmuVotes.c "$tree/kits/sheng/ShengGmuVotes.c"
+          cp kits/sheng/audit-adreno-platform.py "$tree/kits/sheng/audit-adreno-platform.py"
           test -s "$tree/build/sheng-gmu/ShengGmuSource.h"
+          test -s "$tree/kits/sheng/ShengGmuVotes.c"
           test -s "$tree/.cache/firmware/sheng-gpu/qcom/sm8550/sheng/a740_zap.mbn"
 
       - name: Build the Data seed
