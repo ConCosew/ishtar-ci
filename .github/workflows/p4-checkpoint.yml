@@ -406,6 +406,47 @@ jobs:
           test -f "$K" || { echo "kernel.macho MISSING"; exit 1; }
           echo "kernel.macho $(stat -f%z "$K") bytes sha256 $(shasum -a 256 "$K" | cut -d' ' -f1)" | tee -a ../p4-report/artifacts.txt
 
+      - name: GPU prelink segment geometry (analysis only)
+        if: ${{ always() && inputs.device_ref == 'gpu-stage3' }}
+        working-directory: unixnu
+        run: |
+          set -uo pipefail
+          N=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf
+          C=out/ipsw/24A446/kernelcache.decompressed
+          F=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/build/adreno740/firmware.S
+          test -f "$N" || { echo "native Mach-O absent"; exit 0; }
+          test -f "$F" && sed -n '1,12p' "$F" || true
+          python3 - "$N" "$C" <<'PY'
+          import sys
+          sys.path.insert(0, 'kits/XnuPrelink')
+          from pathlib import Path
+          from kc_image import Image
+          n=Image(Path(sys.argv[1]).read_bytes(),0)
+          c=Image(Path(sys.argv[2]).read_bytes(),0)
+          print('native base',hex(n.base))
+          for s in n.segments:
+            if s['size']:print('native',s['name'],'va',hex(s['va']),'size',hex(s['size']),'file',hex(s['filesize']))
+          print('native sections',len(n.sections))
+          for s in n.sections:
+            if s['segment'] in ('__DATA_CONST','__LASTDATA_CONST','__DATA','__TEXT'):
+              print('section',s['segment'],s['name'],'va',hex(s['va']),'size',hex(s['size']))
+          roots={s['name']:s for s in c.segments}
+          print('cache DATA_CONST',hex(roots['__DATA_CONST']['va']),hex(roots['__DATA_CONST']['size']))
+          names=set('''com.apple.AppleFSCompression.AppleFSCompressionTypeZlib com.apple.driver.AppleARMPlatform com.apple.driver.AppleARMWatchdogTimer com.apple.driver.AppleAudioClockLibs com.apple.driver.AppleEffaceableStorage com.apple.driver.AppleIISController com.apple.driver.AppleM2ScalerCSCDriver com.apple.driver.AppleMobileFileIntegrity com.apple.driver.ApplePMGR com.apple.driver.IODARTFamily com.apple.filesystems.apfs com.apple.iokit.CoreAnalyticsFamily com.apple.iokit.IOAVFamily com.apple.iokit.IOAudio2Family com.apple.iokit.IOCECFamily com.apple.iokit.IOCryptoAcceleratorFamily com.apple.iokit.IOGPUFamily com.apple.iokit.IOHDCPFamily com.apple.iokit.IOMobileGraphicsFamily com.apple.iokit.IOReportFamily com.apple.iokit.IOSlowAdaptiveClockingFamily com.apple.iokit.IOStorageFamily com.apple.iokit.IOSurface com.apple.kec.Libm com.apple.kec.corecrypto com.apple.kext.AppleMatch com.apple.kext.CoreTrust com.apple.security.AppleImage4 com.apple.security.sandbox com.apple.iokit.IOHIDFamily'''.split())
+          occ=[]
+          data=c.data
+          for name,(va,off) in c.entries.items():
+            if name=='com.apple.kernel' or name not in names:continue
+            k=Image(data,off)
+            for s in k.segments:
+              if s['size'] and s['name']!='__LINKEDIT':occ.append((s['va'],s['va']+s['size'],s['name'],name))
+          occ.sort()
+          r=roots['__DATA_CONST'];start,end=r['va'],r['va']+r['size']
+          first=[x for x in occ if start<=x[0]<end]
+          print('first retained DATA_CONST',[(hex(a),hex(b),n) for a,b,_,n in first[:3]])
+          if first:print('hole',hex(first[0][0]-start))
+          PY
+
       - name: P5 prelink pairing report (analysis only)
         if: ${{ inputs.dump_pairing }}
         working-directory: unixnu
