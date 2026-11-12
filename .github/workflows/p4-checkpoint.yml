@@ -390,7 +390,7 @@ jobs:
           cp fixtures/fileset-fa07057b-symbols.json kits/XnuPrelink/fixtures/
           ls -l kits/XnuPrelink/fixtures/
       - name: P5 UFS root partition name
-        if: ${{ inputs.device_ref == 'dual-boot' }}
+        if: ${{ inputs.device_ref == 'dual-boot' || inputs.device_ref == 'gpu-stage3' }}
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
