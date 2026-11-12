@@ -350,9 +350,6 @@ jobs:
           cp -a .cache/adreno-source/. "$tree/.cache/adreno-source/"
           cp -a .cache/linux-dts/. "$tree/.cache/linux-dts/"
           cp -a .cache/firmware/sheng-gpu/. "$tree/.cache/firmware/sheng-gpu/"
-          # modules/kits are symlinked from the workspace; Sm8550Platform has no gitlink.
-          rm -rf "$tree/kits/Sm8550Platform"
-          cp -a kits/Sm8550Platform "$tree/kits/Sm8550Platform"
           test -s "$tree/build/sheng-gmu/ShengGmuSource.h"
           test -s "$tree/.cache/firmware/sheng-gpu/qcom/sm8550/sheng/a740_zap.mbn"
 
