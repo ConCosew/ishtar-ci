@@ -17,18 +17,17 @@ p = ROOT / 'kits' / 'XnuPrelink' / 'fileset_layout.py'
 if not p.is_file():
     raise SystemExit(f'missing XnuPrelink layout: {p}')
 text = p.read_text()
-old = "        self.reserve('__LASTDATA_CONST', align(self.end('__DATA_CONST')))\n"
+old = "        self.mapped = {'__TEXT': min(self.segment('__TEXT')['size'], room // 0x1000 * 0x1000)}\n"
 new = (
-    "        # GPU-stage3: __LASTDATA_CONST is only a separator marker; its\n"
-    "        # page-sized native span would otherwise overlap the first retained\n"
-    "        # __DATA_CONST kext in the iPhone17,2 fileset.\n"
+    old +
+    "        # GPU-stage3: __LASTDATA_CONST is a separator marker with a single pointer;\n"
+    "        # its page-sized native span would overlap the first retained __DATA_CONST kext.\n"
     "        self.mapped['__LASTDATA_CONST'] = 0\n"
-    "        self.reserve('__LASTDATA_CONST', align(self.end('__DATA_CONST')))\n"
 )
 if new in text:
     print('already patched', p)
 elif text.count(old) != 1:
-    raise SystemExit('unexpected fileset_layout.py layout reserve line')
+    raise SystemExit('unexpected fileset_layout.py mapped line')
 else:
     p.write_text(text.replace(old, new, 1))
     print('PATCHED', p)
