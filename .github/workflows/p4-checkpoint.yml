@@ -343,7 +343,7 @@ jobs:
           # unixnu.cli assembles a separate staged tree and copies scripts there, but it does not
           # copy ignored cache/build inputs. Pre-seed the exact tree used by this board profile.
           tree=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree
-          mkdir -p "$tree/build/sheng-gmu" "$tree/build/sheng-gpu-smmu"             "$tree/.cache/ishtar" "$tree/.cache/adreno-source" "$tree/.cache/linux-dts"             "$tree/.cache/firmware/sheng-gpu/qcom" "$tree/.cache/firmware/sheng-gpu/qcom/sm8550/sheng"
+          mkdir -p "$tree/kits" "$tree/build/sheng-gmu" "$tree/build/sheng-gpu-smmu"             "$tree/.cache/ishtar" "$tree/.cache/adreno-source" "$tree/.cache/linux-dts"             "$tree/.cache/firmware/sheng-gpu/qcom" "$tree/.cache/firmware/sheng-gpu/qcom/sm8550/sheng"
           cp build/sheng-gmu/*.h "$tree/build/sheng-gmu/"
           cp build/sheng-gpu-smmu/*.h "$tree/build/sheng-gpu-smmu/"
           cp .cache/ishtar/ishtar.dtb "$tree/.cache/ishtar/ishtar.dtb"
