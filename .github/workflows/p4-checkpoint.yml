@@ -333,7 +333,7 @@ jobs:
           # The SM8550 platform kit is a public submodule-style input. Avoid a gitlink because
           # its commit object is not reachable from this private repository's object store.
           rm -rf kits/Sm8550Platform
-          git clone -q --depth 1 https://github.com/UniXNU/UniXNU-sm8550-common.git kits/Sm8550Platform
+          git clone -q https://github.com/UniXNU/UniXNU-sm8550-common.git kits/Sm8550Platform
           git -C kits/Sm8550Platform checkout -q 23b2049fcd9e30356161def84231334fb55ecca9
           for d in kits/AdrenoFirmware kits/AdrenoPM4 kits/ArmSmmu4K drivers/Adreno740 drivers/AdrenoMetal; do
             git submodule update --init --depth 1 "$d"
