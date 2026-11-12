@@ -308,21 +308,38 @@ jobs:
           assert {'OS.vroot', 'SystemOS.vroot'} <= names, names
           print('USERDATA PASS (not flashed)')
           PY
-      - name: Stage offline GPU firmware
+      - name: Stage offline GPU firmware and generated inputs
         if: ${{ inputs.device_ref == 'gpu-stage3' }}
         working-directory: unixnu
         run: |
           set -euo pipefail
           api="https://api.github.com/repos/$OWNER/ishtar-device/releases/tags/rom-erofs-inputs-2026-11-12"
           curl -fsSL -H "Authorization: Bearer $GH_PAT" "$api" > ../gpu-fw-release.json
-          id=$(python3 -c "import json;print([a['id'] for a in json.load(open('../gpu-fw-release.json'))['assets'] if a['name']=='ishtar-gpu-firmware.tar.gz'][0])")
-          mkdir -p .cache/firmware/sheng-gpu
-          curl -fsSL -H "Authorization: Bearer $GH_PAT" -H "Accept: application/octet-stream"             "https://api.github.com/repos/$OWNER/ishtar-device/releases/assets/$id" -o ../ishtar-gpu-firmware.tar.gz
+          fwid=$(python3 -c "import json;print([a['id'] for a in json.load(open('../gpu-fw-release.json'))['assets'] if a['name']=='ishtar-gpu-firmware.tar.gz'][0])")
+          inid=$(python3 -c "import json;print([a['id'] for a in json.load(open('../gpu-fw-release.json'))['assets'] if a['name']=='ishtar-gpu-build-inputs.tar.gz'][0])")
+          mkdir -p .cache/firmware/sheng-gpu .cache/ishtar
+          curl -fsSL -H "Authorization: Bearer $GH_PAT" -H "Accept: application/octet-stream"             "https://api.github.com/repos/$OWNER/ishtar-device/releases/assets/$fwid" -o ../ishtar-gpu-firmware.tar.gz
+          curl -fsSL -H "Authorization: Bearer $GH_PAT" -H "Accept: application/octet-stream"             "https://api.github.com/repos/$OWNER/ishtar-device/releases/assets/$inid" -o ../ishtar-gpu-build-inputs.tar.gz
           tar -xzf ../ishtar-gpu-firmware.tar.gz -C .cache/firmware/sheng-gpu
+          tar -xzf ../ishtar-gpu-build-inputs.tar.gz -C .
           find .cache/firmware/sheng-gpu -type f | sort
           test -s .cache/firmware/sheng-gpu/qcom/gmu_gen70200.bin
           test -s .cache/firmware/sheng-gpu/qcom/a740_sqe.fw
           test -s .cache/firmware/sheng-gpu/qcom/sm8550/sheng/a740_zap.mbn
+          test -s .cache/ishtar/ishtar.dtb
+          test -s scripts/build-ishtar-gpu-inputs.py
+          test -s scripts/build-adreno740-kits.py
+          test -s kits/sheng/ShengGmuVotes.c
+          # The SM8550 platform kit is a public submodule-style input. Avoid a gitlink because
+          # its commit object is not reachable from this private repository's object store.
+          rm -rf kits/Sm8550Platform
+          git clone -q --depth 1 https://github.com/UniXNU/UniXNU-sm8550-common.git kits/Sm8550Platform
+          git -C kits/Sm8550Platform checkout -q 23b2049fcd9e30356161def84231334fb55ecca9
+          for d in kits/AdrenoFirmware kits/AdrenoPM4 kits/ArmSmmu4K drivers/Adreno740 drivers/AdrenoMetal; do
+            git submodule update --init --depth 1 "$d"
+          done
+          python3 scripts/build-ishtar-gpu-inputs.py
+          find build/sheng-gmu build/sheng-gpu-smmu -type f | sort
 
       - name: Build the Data seed
         working-directory: unixnu
