@@ -389,6 +389,15 @@ jobs:
           mkdir -p kits/XnuPrelink/fixtures
           cp fixtures/fileset-fa07057b-symbols.json kits/XnuPrelink/fixtures/
           ls -l kits/XnuPrelink/fixtures/
+      - name: GPU prelink marker layout
+        if: ${{ inputs.device_ref == 'gpu-stage3' }}
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          python3 ishtar-ci/tools/patch-prelink-lastdataconst.py unixnu
+          test -f unixnu/kits/XnuPrelink/fileset_layout.py
+          grep -n "__LASTDATA_CONST" unixnu/kits/XnuPrelink/fileset_layout.py | head -8
+
       - name: P5 UFS root partition name
         if: ${{ inputs.device_ref == 'dual-boot' || inputs.device_ref == 'gpu-stage3' }}
         working-directory: ${{ github.workspace }}
