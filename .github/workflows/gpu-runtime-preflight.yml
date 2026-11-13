@@ -98,7 +98,8 @@ jobs:
           fresh = checkout(ROOT/'.cache/mesa-work', pins['mesa'])
           if fresh:
             for patch in pins['patches']:
-              subprocess.run(['git','-C',str(ROOT/'.cache/mesa-work'),'apply',str(ROOT/patch)],check=True)
+              absolute = (ROOT/patch).resolve()
+              subprocess.run(['git','-C',str((ROOT/'.cache/mesa-work').resolve()),'apply',str(absolute)],check=True)
           checkout(ROOT/'.cache/gpu-reference/metal2vulkan', tr)
           print('pinned sources ready')
           PY
