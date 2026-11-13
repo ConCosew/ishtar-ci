@@ -57,11 +57,21 @@ jobs:
             git submodule update --init --depth 1 "$d"
           done
           # Use only the two upstream runtime scripts as diagnostics. They are not committed to the branch.
-          for p in scripts/build-boot-runtime.py scripts/build-adreno-metal-plugin.py; do
-            curl -fsSL -H "Authorization: Bearer $GH_PAT" \
-              "https://raw.githubusercontent.com/UniXNU/UniXNU/main/$p" -o "../$p"
-            cp "../$p" "$p"
-          done
+          mkdir -p ../runtime-upstream/scripts
+          python3 - <<'PY'
+          import base64, json, os, urllib.request
+          from pathlib import Path
+          token = os.environ['GH_PAT']
+          out = Path('../runtime-upstream')
+          for name in ('scripts/build-boot-runtime.py', 'scripts/build-adreno-metal-plugin.py'):
+              url = f'https://api.github.com/repos/UniXNU/UniXNU/contents/{name}?ref=main'
+              request = urllib.request.Request(url, headers={'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json'})
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  document = json.load(response)
+              (out / name).write_bytes(base64.b64decode(document['content']))
+              Path(name).write_bytes((out / name).read_bytes())
+              print('staged', name)
+          PY
           test -s scripts/data/adreno-compiler-inputs.json
           test -s scripts/data/gpu-metal-vulkan-inputs.json
       - name: Fetch pinned Mesa and metal2vulkan
