@@ -47,7 +47,7 @@ jobs:
       - name: Host tools
         run: |
           set -euo pipefail
-          HOMEBREW_NO_AUTO_UPDATE=1 brew install -q llvm lld meson ninja bison || true
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install -q llvm lld meson ninja bison glslang || true
           python3 -m pip install --quiet --upgrade pip
       - name: Submodules and upstream runtime scripts
         working-directory: unixnu
