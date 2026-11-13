@@ -1,0 +1,116 @@
+name: gpu-runtime-preflight
+on:
+  workflow_dispatch:
+    inputs:
+      unixnu_ref:
+        description: ishtar-unixnu ref
+        required: true
+        default: gpu-stage3
+      device_ref:
+        description: ishtar-device ref
+        required: true
+        default: gpu-stage3
+jobs:
+  preflight:
+    runs-on: macos-26
+    timeout-minutes: 360
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      GH_PAT: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
+      OWNER: ConCosew
+    steps:
+      - name: Check out the private UniXNU build tree
+        uses: actions/checkout@v4
+        with:
+          repository: ConCosew/ishtar-unixnu
+          ref: ${{ inputs.unixnu_ref }}
+          token: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
+          path: unixnu
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the private device repository
+        uses: actions/checkout@v4
+        with:
+          repository: ConCosew/ishtar-device
+          ref: ${{ inputs.device_ref }}
+          token: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
+          path: device
+          persist-credentials: false
+      - name: Check out workflow tools
+        uses: actions/checkout@v4
+        with:
+          path: ishtar-ci
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Host tools
+        run: |
+          set -euo pipefail
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install -q llvm lld meson ninja bison || true
+          python3 -m pip install --quiet --upgrade pip
+      - name: Submodules and upstream runtime scripts
+        working-directory: unixnu
+        run: |
+          set -euo pipefail
+          for d in drivers/Adreno740 drivers/AdrenoMetal kits/AdrenoPM4 kits/AdrenoFirmware kits/ArmSmmu4K; do
+            git submodule update --init --depth 1 "$d"
+          done
+          # Use only the two upstream runtime scripts as diagnostics. They are not committed to the branch.
+          for p in scripts/build-boot-runtime.py scripts/build-adreno-metal-plugin.py; do
+            curl -fsSL -H "Authorization: Bearer $GH_PAT" \
+              "https://raw.githubusercontent.com/UniXNU/UniXNU/main/$p" -o "../$p"
+            cp "../$p" "$p"
+          done
+          test -s scripts/data/adreno-compiler-inputs.json
+          test -s scripts/data/gpu-metal-vulkan-inputs.json
+      - name: Fetch pinned Mesa and metal2vulkan
+        working-directory: unixnu
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, subprocess, sys
+          from pathlib import Path
+          ROOT = Path('.')
+          pins = json.loads((ROOT/'scripts/data/adreno-compiler-inputs.json').read_text())
+          tr = json.loads((ROOT/'scripts/data/gpu-metal-vulkan-inputs.json').read_text())['translator']
+          def checkout(path, pin):
+            if not path.exists():
+              path.mkdir(parents=True)
+              subprocess.run(['git','init','-q',str(path)],check=True)
+              subprocess.run(['git','-C',str(path),'fetch','--depth=1',pin.get('mirror',pin['repository']),pin['commit']],check=True)
+              subprocess.run(['git','-C',str(path),'checkout','--detach','FETCH_HEAD'],check=True)
+              return True
+            got = subprocess.check_output(['git','-C',str(path),'rev-parse','HEAD'],text=True).strip()
+            if got != pin['commit']:
+              raise SystemExit(f'{path}: {got} != {pin["commit"]}')
+            return False
+          fresh = checkout(ROOT/'.cache/mesa-work', pins['mesa'])
+          if fresh:
+            for patch in pins['patches']:
+              subprocess.run(['git','-C',str(ROOT/'.cache/mesa-work'),'apply',str(ROOT/patch)],check=True)
+          checkout(ROOT/'.cache/gpu-reference/metal2vulkan', tr)
+          print('pinned sources ready')
+          PY
+      - name: Build Turnip and Metal plugin
+        working-directory: unixnu
+        run: |
+          set -euo pipefail
+          python3 -m venv .cache/mesa-venv
+          .cache/mesa-venv/bin/python -m pip install -r scripts/requirements-adreno-compiler.txt
+          python3 scripts/build-turnip-darwin.py --target ios27
+          python3 scripts/build-adreno-metal-plugin.py --target ios27 --no-replay
+      - name: Pack GPU addon
+        working-directory: unixnu
+        run: |
+          set -euo pipefail
+          ADRENO_PLUGIN_DIR=build/adreno-metal-plugin27 \
+            python3 scripts/make-gpu-addon.py --publish --no-daemon out/gpuaddon.bin
+          test -s out/gpuaddon.bin
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          p=Path('out/gpuaddon.bin'); b=p.read_bytes()
+          assert b[:8]==b'NGPUADD2'
+          print('GPUADDON',p.stat().st_size,hashlib.sha256(b).hexdigest())
+          PY
