@@ -109,6 +109,10 @@ jobs:
           set -euo pipefail
           python3 -m venv .cache/mesa-venv
           .cache/mesa-venv/bin/python -m pip install -r scripts/requirements-adreno-compiler.txt
+          # Xcode's /usr/bin/bison is too old for Mesa's -Wcounterexamples; the builder puts this directory first on PATH.
+          mkdir -p .cache/mesa-tools/bin
+          ln -sf "$(brew --prefix bison)/bin/bison" .cache/mesa-tools/bin/bison
+          rm -rf build/mesa-tu-ios27
           python3 scripts/build-turnip-darwin.py --target ios27
           python3 scripts/build-adreno-metal-plugin.py --target ios27 --no-replay
       - name: GPU runtime build log (analysis only)
