@@ -111,6 +111,17 @@ jobs:
           .cache/mesa-venv/bin/python -m pip install -r scripts/requirements-adreno-compiler.txt
           python3 scripts/build-turnip-darwin.py --target ios27
           python3 scripts/build-adreno-metal-plugin.py --target ios27 --no-replay
+      - name: GPU runtime build log (analysis only)
+        if: ${{ always() }}
+        working-directory: unixnu
+        run: |
+          set -uo pipefail
+          for f in .cache/mesa-tu-ios27-configure.log .cache/mesa-tu-ios27-build.log; do
+            if [ -f "$f" ]; then
+              echo "=== $f ==="
+              tail -160 "$f"
+            fi
+          done
       - name: Pack GPU addon
         working-directory: unixnu
         run: |
