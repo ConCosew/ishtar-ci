@@ -164,6 +164,7 @@ jobs:
         working-directory: unixnu
         run: |
           set -euo pipefail
+          mkdir -p out
           ADRENO_PLUGIN_DIR=build/adreno-metal-plugin27 \
             python3 scripts/make-gpu-addon.py --publish --no-daemon out/gpuaddon.bin
           test -s out/gpuaddon.bin
