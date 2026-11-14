@@ -1,0 +1,311 @@
+name: gpu-runtime-build
+on:
+  workflow_dispatch:
+    inputs:
+      xcode:
+        description: Xcode version
+        type: string
+        default: '26.6'
+      root_partition_name:
+        description: UFS root GPT name
+        type: choice
+        options:
+        - ios_root
+        - userdata
+        default: ios_root
+permissions:
+  contents: read
+concurrency:
+  group: p4-checkpoint
+  cancel-in-progress: false
+jobs:
+  checkpoint:
+    runs-on: macos-26
+    timeout-minutes: 300
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      UNIXNU_DEVICE: ${{ github.workspace }}/device
+      UNIXNU_UEFI: ${{ github.workspace }}/uefi-ishtar
+      UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+      GITHUB_TOKEN: ${{ github.token }}
+      GH_PAT: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
+      OWNER: ConCosew
+      BUILD_USERDATA: 'false'
+      DUMP_PAIRING: 'false'
+      PUBLISH_KERNELCACHE: 'false'
+      PUBLISH_USERDATA_IMAGE: 'false'
+      ROOT_PARTITION_NAME: ios_root
+      UNIXNU_KERNELCACHE: ${{ github.workspace }}/unixnu/out/ipsw/24A446/kernelcache.decompressed
+      DUMP_CONTEXT: 'false'
+    steps:
+    - name: Check out the private UniXNU build tree
+      uses: actions/checkout@v4
+      with:
+        repository: ConCosew/ishtar-unixnu
+        ref: gpu-runtime
+        token: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
+        path: unixnu
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Check out the private device repository (safe-checkpoint)
+      uses: actions/checkout@v4
+      with:
+        repository: ConCosew/ishtar-device
+        ref: gpu-runtime
+        token: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
+        path: device
+        persist-credentials: false
+    - name: Check out the private uefi board package
+      uses: actions/checkout@v4
+      with:
+        repository: ConCosew/ishtar-uefi
+        ref: ishtar
+        token: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
+        path: uefi-ishtar
+        persist-credentials: false
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+    - name: Check out this workflow's tools
+      uses: actions/checkout@v4
+      with:
+        path: ishtar-ci
+        persist-credentials: false
+    - name: Host tools
+      run: "set -euo pipefail\nmkdir -p p4-report\nHOMEBREW_NO_AUTO_UPDATE=1 brew install -q llvm lld meson ninja bison glslang spirv-tools shaderc mtools dtc unifdef blacktop/tap/ipsw || true\n          echo \"$(brew --prefix bison)/bin\" >> \"$GITHUB_PATH\"\n          echo \"$(brew --prefix spirv-tools)/bin\" >> \"$GITHUB_PATH\"\n          echo \"$(brew --prefix shaderc)/bin\" >> \"$GITHUB_PATH\"\n          rustup toolchain install 1.98.0 --profile minimal || true\n          rustup component add rust-src --toolchain 1.98.0 || true\nsw_vers >> p4-report/host.txt\nxcodebuild -version >> p4-report/host.txt\ndf -h . >> p4-report/host.txt\n"
+    - name: Preflight (fail in seconds, before the expensive steps)
+      working-directory: unixnu
+      run: "set -euo pipefail\necho \"== duplicate source appends in build-sheng-source-storage.py ==\"\npython3 - <<'PY'\nimport re\nfrom collections import Counter\nfrom pathlib import Path\np = Path('scripts/build-sheng-source-storage.py')\nt = p.read_text()\nnames = re.findall(r\"device_source\\('([^']+)'\\)\", t)\nappends = re.findall(r\"sources\\.append\\(device_source\\('([^']+)'\\)\\)\", t)\ndup = {k: v for k, v in Counter(appends).items() if v > 1}\nprint('append count:', len(appends))\nprint('duplicates:', dup or 'none')\nif dup:\n    raise SystemExit('duplicate archive sources: %s' % dup)\nprint('PREFLIGHT duplicate-source OK')\nPY\necho \"== GopFramebuffer pin consistency ==\"\npython3 - <<'PY'\nimport re, subprocess\nfrom pathlib import Path\ncomp = Path('components.toml').read_text()\nm = re.search(r'id = \"GopFramebuffer\"(.{0,600}?)revision = \"([0-9a-f]{40})\"', comp, re.S)\ncomp_pin = m.group(2) if m else None\nlink = subprocess.run(['git', 'ls-tree', 'HEAD', 'drivers/GopFramebuffer'],\n                      capture_output=True, text=True).stdout.split()\nlink_pin = link[2] if len(link) >= 3 else None\nprint('components.toml pin:', comp_pin)\nprint('drivers gitlink    :', link_pin)\nif comp_pin != link_pin:\n    raise SystemExit('pin mismatch: the builder compiles the gitlink, so they must match')\nprint('PREFLIGHT pin OK')\nPY\necho \"== GopFramebuffer source symbols ==\"\ngit submodule update --init --depth 1 drivers/GopFramebuffer 2>&1 | tail -2\npython3 - <<'PY'\nimport subprocess\nfrom pathlib import Path\nneed = ['native_gop_virtual', 'native_legacy_direct_snapshot']\nforbid = ['native_adreno_fences']\ntext = ''\nfor f in ('NativeLegacyDisplay.cpp', 'NativeGOPPresenter.cpp'):\n    p = Path('drivers/GopFramebuffer') / f\n    if p.is_file():\n        text += p.read_text()\nif not text:\n    raise SystemExit('drivers/GopFramebuffer is empty; submodules not initialised')\nfor sym in need:\n    present = sym in text or 'native_legacy_direct' in text\n    print(f'{\"have\" if present else \"MISSING\"} {sym}')\n    if not present:\n        raise SystemExit(f'{sym} not found in the pinned GopFramebuffer')\nfor sym in forbid:\n    if sym in text:\n        raise SystemExit(f'{sym} is referenced but stage 0 builds no Adreno740')\nprint('PREFLIGHT symbols OK')\nPY\n\necho \"== P3/T8 userdata static prerequisites ==\"\npython3 - <<'PY'\nimport tomllib\nfrom pathlib import Path\nprof = tomllib.loads(Path('profiles/os/ios-27.0.1-24A446/profile.toml').read_text())\nboard = tomllib.loads(Path('../device/board.toml').read_text())\nu = board['userdata']\ncap = (u['last_lba'] - u['first_lba'] + 1) * u.get('lba_bytes', 4096)\nw = prof['userdata']['windows']\nassert w and w[0]['name'] == 'OS', w\nassert cap > 17 * 2**30, cap\nassert Path('scripts/unixnu/userdata.py').is_file()\nprint('PREFLIGHT userdata OK: capacity %.1f GiB, windows %s' % (cap / 2**30, [x['name'] for x in w]))\nPY\n\nif [ \"$BUILD_USERDATA\" = true ]; then\n  echo \"== object names expected by the iOS 27 source storage ==\"\n  python3 - <<'PY'\nimport tomllib\nfrom pathlib import Path\nprof = tomllib.loads(Path('profiles/os/ios-27.0.1-24A446/profile.toml').read_text())\nnames = [w['name'] + '.vroot' for w in prof['userdata']['windows']]\nassert names == ['OS.vroot', 'SystemOS.vroot'], names\nprint('PREFLIGHT vroot objects OK:', names)\nPY\nfi\n"
+    - name: Private inputs (live FDT)
+      working-directory: unixnu
+      run: "set -uo pipefail\nmkdir -p out/ipsw/24A446\nrel=$(curl -fsSL -H \"Authorization: Bearer $GH_PAT\" \\\n  \"https://api.github.com/repos/$OWNER/ishtar-device/releases/tags/checkpoint-inputs-2026-11-06\")\naid=$(printf '%s' \"$rel\" | jq -r '.assets[] | select(.name==\"ishtar.dtb\") | .id')\ncurl -fsSL -H \"Authorization: Bearer $GH_PAT\" -H \"Accept: application/octet-stream\" \\\n  \"https://api.github.com/repos/$OWNER/ishtar-device/releases/assets/$aid\" -o out/ipsw/24A446/ishtar.dtb\nsize=$(stat -f%z out/ipsw/24A446/ishtar.dtb)\necho \"live FDT: $size bytes sha256 $(shasum -a 256 out/ipsw/24A446/ishtar.dtb | cut -d' ' -f1)\" | tee ../p4-report/inputs.txt\ntest \"$size\" = \"901987\"\n"
+    - name: defconfig / fetch / ipsw fetch / AEA decrypt
+      working-directory: unixnu
+      run: "set -uo pipefail\n./unixnu defconfig ishtar_ios27_defconfig -D ../device 2>&1 | tee -a ../p4-report/build.log\n./unixnu fetch -D ../device 2>&1 | tee -a ../p4-report/build.log\n./unixnu ipsw fetch -D ../device 2>&1 | tee -a ../p4-report/build.log\n./unixnu ipsw fetch OS Cryptex1,SystemOS -D ../device 2>&1 | tee -a ../p4-report/build.log\npython3 - <<'PY' 2>&1 | tee -a ../p4-report/build.log\nimport sys\nsys.path.insert(0, 'scripts')\nfrom unixnu.ipsw import decrypt_aea\nfrom pathlib import Path\nfor n in ('043-69909-664.dmg.aea', '043-68526-711.dmg.aea'):\n    p = Path('out/ipsw/24A446') / n\n    print('decrypt', n, p.is_file())\n    if p.is_file(): print(' -> decrypted', decrypt_aea(p).name)\nPY\n"
+    - name: T5 owner root policies + T6 trust bundle
+      working-directory: unixnu
+      run: "set -euo pipefail\ngit submodule update --init --depth 1 -- kits/VerifiedRoot 2>&1 | tee -a ../p4-report/build.log\nKEYS=build/verified-root-host/keys\nmkdir -p \"$KEYS\"\nopenssl genrsa -out \"$KEYS/owner.pem\" 3072 2>/dev/null\nopenssl rsa -in \"$KEYS/owner.pem\" -pubout -out \"$KEYS/owner-public.pem\" 2>/dev/null\nOPENSSL_PREFIX=$(brew --prefix openssl@3 2>/dev/null || brew --prefix openssl)\nxcrun clang -std=c11 -Wall -Wextra -Werror -dynamiclib \\\n  -I kits/VerifiedRoot/include -I \"$OPENSSL_PREFIX/include\" \\\n  kits/VerifiedRoot/src/verified_root.c kits/VerifiedRoot/tests/openssl_provider.c \\\n  -L \"$OPENSSL_PREFIX/lib\" -lcrypto \\\n  -o build/verified-root-host/verified-root.dylib 2>&1 | tee -a ../p4-report/build.log\nOUT=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/build/verified-root-24A446\npython3 ../device/scripts/build-root-policies.py --unixnu . --profile ios-27.0.1-24A446 \\\n  --out \"$OUT\" 2>&1 | tee -a ../p4-report/build.log\npython3 ../device/scripts/build-trust-bundle.py --ipsw-cache out/ipsw/24A446 2>&1 | tee -a ../p4-report/build.log\nfor n in OS SystemOS; do\n  for f in manifest.bin trusted-key.bin verification.json hashes.bin; do\n    test -f \"$OUT/$n/$f\" || { echo \"MISSING $n/$f\"; exit 1; }\n  done\ndone\necho \"T5/T6 PASS\" | tee -a ../p4-report/build.log\n"
+    - name: Fetch pinned Mesa and metal2vulkan
+      working-directory: unixnu
+      run: "set -euo pipefail\npython3 - <<'PY'\nimport json, subprocess\nfrom pathlib import Path\nROOT = Path('.')\npins = json.loads((ROOT/'scripts/data/adreno-compiler-inputs.json').read_text())\ntr = json.loads((ROOT/'scripts/data/gpu-metal-vulkan-inputs.json').read_text())['translator']\ndef checkout(path, pin):\n    if not path.exists():\n        path.mkdir(parents=True)\n        subprocess.run(['git','init','-q',str(path)],check=True)\n        subprocess.run(['git','-C',str(path),'fetch','--depth=1',pin.get('mirror',pin['repository']),pin['commit']],check=True)\n        subprocess.run(['git','-C',str(path),'checkout','--detach','FETCH_HEAD'],check=True)\n        return True\n    got = subprocess.check_output(['git','-C',str(path),'rev-parse','HEAD'],text=True).strip()\n    if got != pin['commit']:\n        raise SystemExit(f'{path}: {got} != {pin[\"commit\"]}')\n    return False\nfresh = checkout(ROOT/'.cache/mesa-work', pins['mesa'])\nif fresh:\n    for patch in pins['patches']:\n        subprocess.run(['git','-C',str((ROOT/'.cache/mesa-work').resolve()),'apply',str((ROOT/patch).resolve())],check=True)\ncheckout(ROOT/'.cache/gpu-reference/metal2vulkan', tr)\nprint('pinned Mesa and metal2vulkan ready')\nPY"
+    - name: Build GPU userspace addon
+      working-directory: unixnu
+      run: 'set -euo pipefail
+
+        mkdir -p .cache/mesa-tools/bin
+
+        ln -sf "$(brew --prefix bison)/bin/bison" .cache/mesa-tools/bin/bison
+
+        python3 -m venv .cache/mesa-venv
+
+        .cache/mesa-venv/bin/python -m pip install -r scripts/requirements-adreno-compiler.txt
+
+        rm -rf build/mesa-tu-ios27 build/adreno-metal-plugin27 out/gpuaddon.bin
+
+        python3 scripts/build-turnip-darwin.py --target ios27
+
+        python3 scripts/build-adreno-metal-plugin.py --target ios27 --no-replay
+
+        mkdir -p out
+
+        ADRENO_PLUGIN_DIR=build/adreno-metal-plugin27 python3 scripts/make-gpu-addon.py --publish --no-daemon out/gpuaddon.bin
+
+        test -s out/gpuaddon.bin
+
+        python3 - <<''PY''
+
+        from pathlib import Path
+
+        import hashlib
+
+        p=Path(''out/gpuaddon.bin''); b=p.read_bytes()
+
+        assert b[:8]==b''NGPUADD2''
+
+        print(''GPUADDON'',p.stat().st_size,hashlib.sha256(b).hexdigest())
+
+        PY'
+    - name: Build GPU owner trust bundle
+      working-directory: unixnu
+      run: 'set -euo pipefail
+
+        ./unixnu ipsw fetch StaticTrustCache Cryptex1,SystemTrustCache Cryptex1,AppTrustCache -D ../device > ../p4-report/trust-paths.txt
+
+        mapfile -t TRUST < <(grep -E ''/[^ ]+\.(trustcache|im4p)$'' ../p4-report/trust-paths.txt)
+
+        test ${#TRUST[@]} -ge 3
+
+        python3 scripts/bundle-ipsw-trust.py out/original-trust.bundle "${TRUST[@]}"
+
+        python3 - <<''PY''
+
+        import json, subprocess
+
+        from pathlib import Path
+
+        t=json.loads(Path(''build/adreno-metal-plugin27/trust.json'').read_text())
+
+        hashes=[t[''cdhash''], t[''turnip_cdhash'']]
+
+        if t.get(''daemon_cdhash''): hashes.append(t[''daemon_cdhash''])
+
+        subprocess.run([''python3'',''scripts/trust-append-module.py'',''out/original-trust.bundle'',''out/owner-trust.bundle'',*hashes],check=True)
+
+        print(''trust bundle: out/owner-trust.bundle'')
+
+        PY
+
+        test -s out/owner-trust.bundle'
+    - name: Stage offline GPU firmware and generated inputs
+      working-directory: unixnu
+      run: "set -euo pipefail\napi=\"https://api.github.com/repos/$OWNER/ishtar-device/releases/tags/rom-erofs-inputs-2026-11-12\"\ncurl -fsSL -H \"Authorization: Bearer $GH_PAT\" \"$api\" > ../gpu-fw-release.json\nfwid=$(python3 -c \"import json;print([a['id'] for a in json.load(open('../gpu-fw-release.json'))['assets'] if a['name']=='ishtar-gpu-firmware.tar.gz'][0])\")\ninid=$(python3 -c \"import json;print([a['id'] for a in json.load(open('../gpu-fw-release.json'))['assets'] if a['name']=='ishtar-gpu-build-inputs.tar.gz'][0])\")\nmkdir -p .cache/firmware/sheng-gpu .cache/ishtar\ncurl -fsSL -H \"Authorization: Bearer $GH_PAT\" -H \"Accept: application/octet-stream\"             \"https://api.github.com/repos/$OWNER/ishtar-device/releases/assets/$fwid\" -o ../ishtar-gpu-firmware.tar.gz\ncurl -fsSL -H \"Authorization: Bearer $GH_PAT\" -H \"Accept: application/octet-stream\"             \"https://api.github.com/repos/$OWNER/ishtar-device/releases/assets/$inid\" -o ../ishtar-gpu-build-inputs.tar.gz\ntar -xzf ../ishtar-gpu-firmware.tar.gz -C .cache/firmware/sheng-gpu\ntar -xzf ../ishtar-gpu-build-inputs.tar.gz -C .\ngit checkout -- scripts\nfind .cache/firmware/sheng-gpu -type f | sort\ntest -s .cache/firmware/sheng-gpu/qcom/gmu_gen70200.bin\ntest -s .cache/firmware/sheng-gpu/qcom/a740_sqe.fw\ntest -s .cache/firmware/sheng-gpu/qcom/sm8550/sheng/a740_zap.mbn\ntest -s .cache/ishtar/ishtar.dtb\ntest -s scripts/build-ishtar-gpu-inputs.py\ntest -s scripts/build-adreno740-kits.py\ntest -s kits/sheng/ShengGmuVotes.c\n# The gpu-runtime branch carries coherent gitlinks; do not overwrite them with old pins.\nfor d in kits/Sm8550Platform kits/AdrenoFirmware kits/AdrenoPM4 kits/ArmSmmu4K drivers/Adreno740 drivers/AdrenoMetal; do\n  git submodule update --init --depth 1 \"$d\"\ndone\ngit submodule status kits/Sm8550Platform drivers/Adreno740 drivers/AdrenoMetal kits/ArmSmmu4K\npython3 scripts/build-ishtar-gpu-inputs.py\nfind build/sheng-gmu build/sheng-gpu-smmu -type f | sort\n# unixnu.cli assembles a separate staged tree and copies scripts there, but it does not\n# copy ignored cache/build inputs. Pre-seed the exact tree used by this board profile.\ntree=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree\nmkdir -p \"$tree/kits\" \"$tree/build/sheng-gmu\" \"$tree/build/sheng-gpu-smmu\"             \"$tree/.cache/ishtar\" \"$tree/.cache/adreno-source\" \"$tree/.cache/linux-dts\"             \"$tree/.cache/firmware/sheng-gpu/qcom\" \"$tree/.cache/firmware/sheng-gpu/qcom/sm8550/sheng\"\ncp build/sheng-gmu/*.h \"$tree/build/sheng-gmu/\"\ncp build/sheng-gpu-smmu/*.h \"$tree/build/sheng-gpu-smmu/\"\ncp .cache/ishtar/ishtar.dtb \"$tree/.cache/ishtar/ishtar.dtb\"\ncp -a .cache/adreno-source/. \"$tree/.cache/adreno-source/\"\ncp -a .cache/linux-dts/. \"$tree/.cache/linux-dts/\"\ncp -a .cache/firmware/sheng-gpu/. \"$tree/.cache/firmware/sheng-gpu/\"\nmkdir -p \"$tree/kits/sheng\"\ncp kits/sheng/ShengGmuVotes.c \"$tree/kits/sheng/ShengGmuVotes.c\"\ncp kits/sheng/audit-adreno-platform.py \"$tree/kits/sheng/audit-adreno-platform.py\"\ntest -s \"$tree/build/sheng-gmu/ShengGmuSource.h\"\ntest -s \"$tree/kits/sheng/ShengGmuVotes.c\"\ntest -s \"$tree/.cache/firmware/sheng-gpu/qcom/sm8550/sheng/a740_zap.mbn\"\n"
+    - name: Build the Data seed
+      working-directory: unixnu
+      run: 'set -euo pipefail
+
+        CFG=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/.config
+
+        SEEDDIR=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/data-seed
+
+        test -f drivers/DarwinBoot/Test/packed_ramdisk.py || { echo "FATAL: DarwinBoot/Test/packed_ramdisk.py missing (submodule not initialised)"; exit 1; }
+
+        python3 "${{ github.workspace }}/ishtar-ci/tools/ci-data-seed.py" --device ../device --unixnu . --config "$CFG" --out "$SEEDDIR" 2>&1 | tee ../p4-report/data-seed.log
+
+        grep ''^DATA_SEED='' ../p4-report/data-seed.log | tail -1 > ../p4-report/data-seed.path
+
+        test -s ../p4-report/data-seed.path || { echo "FATAL: no DATA_SEED"; exit 1; }
+
+        SEED=$(sed ''s/^DATA_SEED=//'' ../p4-report/data-seed.path)
+
+        test -s "$SEED" || { echo "FATAL: Data seed missing: $SEED"; exit 1; }
+
+        echo "Data seed: $SEED ($(stat -f%z "$SEED") bytes)"
+
+        cp "$SEEDDIR/seed.json" ../p4-report/seed.json
+
+        '
+    - name: Init uefi submodules and link the private Binaries
+      working-directory: uefi-ishtar
+      run: 'set -euo pipefail
+
+        git submodule update --init --depth 1 2>&1 | tail -5 || true
+
+        rm -rf Binaries
+
+        git clone -q "https://x-access-token:$GH_PAT@github.com/$OWNER/ishtar-device-binaries.git" Binaries
+
+        git -C Binaries checkout -q 67a2392eae79f921675777de0f550dc87e151db6
+
+        echo "Binaries/ishtar files: $(find Binaries/ishtar -type f | wc -l)"
+
+        '
+    - name: P5 reviewed fixture
+      working-directory: unixnu
+      run: 'set -euo pipefail
+
+        mkdir -p kits/XnuPrelink/fixtures
+
+        cp fixtures/fileset-fa07057b-symbols.json kits/XnuPrelink/fixtures/
+
+        ls -l kits/XnuPrelink/fixtures/
+
+        '
+    - name: GPU prelink marker layout
+      working-directory: ${{ github.workspace }}
+      run: 'set -euo pipefail
+
+        python3 ishtar-ci/tools/patch-prelink-lastdataconst.py unixnu
+
+        test -f unixnu/kits/XnuPrelink/fileset_layout.py
+
+        grep -n "__LASTDATA_CONST" unixnu/kits/XnuPrelink/fileset_layout.py | head -8
+
+        '
+    - name: P5 UFS root partition name
+      working-directory: ${{ github.workspace }}
+      run: 'set -euo pipefail
+
+        python3 "${{ github.workspace }}/ishtar-ci/tools/patch-ufs.py" "$ROOT_PARTITION_NAME"
+
+        '
+    - name: Build kernel
+      working-directory: unixnu
+      run: 'set -uo pipefail
+
+        test -s "$UNIXNU_KERNELCACHE" || { echo "FATAL: local kernelcache missing: $UNIXNU_KERNELCACHE"; exit 1; }
+
+        echo "prelink will use local kernelcache: $UNIXNU_KERNELCACHE ($(stat -f%z "$UNIXNU_KERNELCACHE") bytes)"
+
+        ./unixnu build kernel -D ../device 2>&1 | tee -a ../p4-report/build.log
+
+        K=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/kernel/kernel.macho
+
+        test -f "$K" || { echo "kernel.macho MISSING"; exit 1; }
+
+        echo "kernel.macho $(stat -f%z "$K") bytes sha256 $(shasum -a 256 "$K" | cut -d'' '' -f1)" | tee -a ../p4-report/artifacts.txt
+
+        '
+    - name: GPU prelink segment geometry (analysis only)
+      working-directory: unixnu
+      run: "set -uo pipefail\nN=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf\nC=out/ipsw/24A446/kernelcache.decompressed\nF=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/build/adreno740/firmware.S\ntest -f \"$N\" || { echo \"native Mach-O absent\"; exit 0; }\ntest -f \"$F\" && sed -n '1,12p' \"$F\" || true\npython3 - \"$N\" \"$C\" <<'PY'\nimport sys\nsys.path.insert(0, 'kits/XnuPrelink')\nfrom pathlib import Path\nfrom kc_image import Image\nn=Image(Path(sys.argv[1]).read_bytes(),0)\nc=Image(Path(sys.argv[2]).read_bytes(),0)\nprint('native base',hex(n.base))\nfor s in n.segments:\n  if s['size']:print('native',s['name'],'va',hex(s['va']),'size',hex(s['size']),'file',hex(s['filesize']))\nprint('native sections',len(n.sections))\nfor s in n.sections:\n  if s['segment'] in ('__DATA_CONST','__LASTDATA_CONST','__DATA','__TEXT'):\n    print('section',s['segment'],s['name'],'va',hex(s['va']),'size',hex(s['size']))\nroots={s['name']:s for s in c.segments}\nprint('cache DATA_CONST',hex(roots['__DATA_CONST']['va']),hex(roots['__DATA_CONST']['size']))\nnames=set('''com.apple.AppleFSCompression.AppleFSCompressionTypeZlib com.apple.driver.AppleARMPlatform com.apple.driver.AppleARMWatchdogTimer com.apple.driver.AppleAudioClockLibs com.apple.driver.AppleEffaceableStorage com.apple.driver.AppleIISController com.apple.driver.AppleM2ScalerCSCDriver com.apple.driver.AppleMobileFileIntegrity com.apple.driver.ApplePMGR com.apple.driver.IODARTFamily com.apple.filesystems.apfs com.apple.iokit.CoreAnalyticsFamily com.apple.iokit.IOAVFamily com.apple.iokit.IOAudio2Family com.apple.iokit.IOCECFamily com.apple.iokit.IOCryptoAcceleratorFamily com.apple.iokit.IOGPUFamily com.apple.iokit.IOHDCPFamily com.apple.iokit.IOMobileGraphicsFamily com.apple.iokit.IOReportFamily com.apple.iokit.IOSlowAdaptiveClockingFamily com.apple.iokit.IOStorageFamily com.apple.iokit.IOSurface com.apple.kec.Libm com.apple.kec.corecrypto com.apple.kext.AppleMatch com.apple.kext.CoreTrust com.apple.security.AppleImage4 com.apple.security.sandbox com.apple.iokit.IOHIDFamily'''.split())\nocc=[]\ndata=c.data\nfor name,(va,off) in c.entries.items():\n  if name=='com.apple.kernel' or name not in names:continue\n  k=Image(data,off)\n  for s in k.segments:\n    if s['size'] and s['name']!='__LINKEDIT':occ.append((s['va'],s['va']+s['size'],s['name'],name))\nocc.sort()\nr=roots['__DATA_CONST'];start,end=r['va'],r['va']+r['size']\nfirst=[x for x in occ if start<=x[0]<end]\nprint('first retained DATA_CONST',[(hex(a),hex(b),n) for a,b,_,n in first[:3]])\nif first:print('hole',hex(first[0][0]-start))\nPY\n"
+    - name: Build firmware
+      working-directory: unixnu
+      run: 'set -uo pipefail
+
+        ./unixnu build package -D ../device 2>&1 | tee -a ../p4-report/build.log
+
+        ./unixnu build firmware -D ../device --uefi ../uefi-ishtar 2>&1 | tee -a ../p4-report/build.log
+
+        FD=../uefi-ishtar/Build/ishtarPkg/DEBUG_CLANGPDB/FV/SILICIUM_UEFI.fd
+
+        test -f "$FD" || { echo "SILICIUM_UEFI.fd MISSING"; exit 1; }
+
+        echo "FD $(stat -f%z "$FD") bytes sha256 $(shasum -a 256 "$FD" | cut -d'' '' -f1)" | tee -a ../p4-report/artifacts.txt
+
+        test "$(stat -f%z "$FD")" = "3145728"
+
+        '
+    - name: Build the safe-checkpoint payload
+      working-directory: unixnu
+      run: "set -uo pipefail\nTC=build/original-static-system-trust/original-static-system.bundle\nSEED=$(sed 's/^DATA_SEED=//' ../p4-report/data-seed.path)\ntest -s \"$SEED\" || { echo \"FATAL: Data seed missing for payload: $SEED\"; exit 1; }\n./unixnu build payload -D ../device --owner-trust-cache out/owner-trust.bundle --gpu-addon out/gpuaddon.bin --data-ramdisk \"$SEED\" --unique-chip-id \"$UNIXNU_UNIQUE_CHIP_ID\" --kernel-arg sheng-gpu-addon=1 2>&1 | tee -a ../p4-report/build.log\nP=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/payload/payload.json\ntest -f \"$P\" || { echo \"payload.json MISSING\"; exit 1; }\necho \"== kernel arg safety ==\" | tee ../p4-report/safety.txt\nfor bad in sheng-data-persist sheng-data-reset native-ufs-root native-source-storage; do\n  if grep -q \"$bad\" \"$P\"; then echo \"UNSAFE $bad present\" | tee -a ../p4-report/safety.txt; else echo \"SAFE $bad absent\" | tee -a ../p4-report/safety.txt; fi\ndone\nif [ \"gpu-runtime\" = \"safe-checkpoint\" ]; then\n  ! grep -q -E 'sheng-data-persist|sheng-data-reset|native-ufs-root|native-source-storage' \"$P\"\nelse\n  echo \"dual-boot/persistent root: root-write args are expected on gpu-runtime\"\nfi\n"
+    - name: bootimg (header v0)
+      working-directory: unixnu
+      run: 'set -uo pipefail
+
+        ./unixnu bootimg -D ../device --uefi ../uefi-ishtar --dtb out/ipsw/24A446/ishtar.dtb 2>&1 | tee -a ../p4-report/build.log
+
+        B=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/boot/boot.img
+
+        J=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/boot/boot.json
+
+        test -f "$B" || { echo "boot.img MISSING"; exit 1; }
+
+        cp "$J" ../p4-report/boot.json
+
+        echo "boot.img $(stat -f%z "$B") bytes sha256 $(shasum -a 256 "$B" | cut -d'' '' -f1)" | tee -a ../p4-report/artifacts.txt
+
+        python3 - <<''PY'' | tee ../p4-report/boot-verification.txt
+
+        import json
+
+        d = json.load(open(''../p4-report/boot.json''))
+
+        print(''header_version ='', d.get(''header_version''))
+
+        print(''ramdisk_bytes  ='', d.get(''ramdisk_bytes''))
+
+        print(''pagesize       ='', d.get(''pagesize''))
+
+        assert d.get(''header_version'') == 0
+
+        assert (d.get(''ramdisk_bytes'') or 0) > 0
+
+        print(''BOOTIMG PASS'')
+
+        PY
+
+        '
+    - name: GPU runtime build report
+      if: ${{ always() }}
+      working-directory: unixnu
+      run: "set -uo pipefail\nfor f in out/gpuaddon.bin out/owner-trust.bundle out/ishtar/ios-27.0.1-24A446/ishtar_ios27/payload/payload.img out/ishtar/ios-27.0.1-24A446/ishtar_ios27/boot/boot.img; do\n  if [ -f \"$f\" ]; then\n    echo \"$f $(stat -f%z \"$f\") bytes sha256 $(shasum -a 256 \"$f\" | cut -d' ' -f1)\"\n  fi\ndone"
