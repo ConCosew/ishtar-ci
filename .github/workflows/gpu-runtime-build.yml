@@ -127,35 +127,7 @@ jobs:
         PY'
     - name: Build GPU owner trust bundle
       working-directory: unixnu
-      run: 'set -euo pipefail
-
-        ./unixnu ipsw fetch StaticTrustCache Cryptex1,SystemTrustCache Cryptex1,AppTrustCache -D ../device > ../p4-report/trust-paths.txt
-
-        mapfile -t TRUST < <(grep -E ''/[^ ]+\.(trustcache|im4p)$'' ../p4-report/trust-paths.txt)
-
-        test ${#TRUST[@]} -ge 3
-
-        python3 scripts/bundle-ipsw-trust.py out/original-trust.bundle "${TRUST[@]}"
-
-        python3 - <<''PY''
-
-        import json, subprocess
-
-        from pathlib import Path
-
-        t=json.loads(Path(''build/adreno-metal-plugin27/trust.json'').read_text())
-
-        hashes=[t[''cdhash''], t[''turnip_cdhash'']]
-
-        if t.get(''daemon_cdhash''): hashes.append(t[''daemon_cdhash''])
-
-        subprocess.run([''python3'',''scripts/trust-append-module.py'',''out/original-trust.bundle'',''out/owner-trust.bundle'',*hashes],check=True)
-
-        print(''trust bundle: out/owner-trust.bundle'')
-
-        PY
-
-        test -s out/owner-trust.bundle'
+      run: "set -euo pipefail\n./unixnu ipsw fetch StaticTrustCache Cryptex1,SystemTrustCache Cryptex1,AppTrustCache -D ../device > ../p4-report/trust-paths.txt\npython3 - <<'PYEOF'\nimport re, subprocess\nfrom pathlib import Path\nlines = Path('../p4-report/trust-paths.txt').read_text().splitlines()\ntrust = [l for l in lines if re.fullmatch(r'/[^ ]+\\.(trustcache|im4p)', l)]\nprint('trust modules:', *trust, sep='\\n  ')\nif not trust:\n    raise SystemExit('no IPSW trust modules found')\nsubprocess.run(['python3', 'scripts/bundle-ipsw-trust.py', 'out/original-trust.bundle', *trust], check=True)\nPYEOF\npython3 - <<'PY'\nimport json, subprocess\nfrom pathlib import Path\nt=json.loads(Path('build/adreno-metal-plugin27/trust.json').read_text())\nhashes=[t['cdhash'], t['turnip_cdhash']]\nif t.get('daemon_cdhash'): hashes.append(t['daemon_cdhash'])\nsubprocess.run(['python3','scripts/trust-append-module.py','out/original-trust.bundle','out/owner-trust.bundle',*hashes],check=True)\nprint('trust bundle: out/owner-trust.bundle')\nPY\ntest -s out/owner-trust.bundle"
     - name: Stage offline GPU firmware and generated inputs
       working-directory: unixnu
       run: "set -euo pipefail\napi=\"https://api.github.com/repos/$OWNER/ishtar-device/releases/tags/rom-erofs-inputs-2026-11-12\"\ncurl -fsSL -H \"Authorization: Bearer $GH_PAT\" \"$api\" > ../gpu-fw-release.json\nfwid=$(python3 -c \"import json;print([a['id'] for a in json.load(open('../gpu-fw-release.json'))['assets'] if a['name']=='ishtar-gpu-firmware.tar.gz'][0])\")\ninid=$(python3 -c \"import json;print([a['id'] for a in json.load(open('../gpu-fw-release.json'))['assets'] if a['name']=='ishtar-gpu-build-inputs.tar.gz'][0])\")\nmkdir -p .cache/firmware/sheng-gpu .cache/ishtar\ncurl -fsSL -H \"Authorization: Bearer $GH_PAT\" -H \"Accept: application/octet-stream\"             \"https://api.github.com/repos/$OWNER/ishtar-device/releases/assets/$fwid\" -o ../ishtar-gpu-firmware.tar.gz\ncurl -fsSL -H \"Authorization: Bearer $GH_PAT\" -H \"Accept: application/octet-stream\"             \"https://api.github.com/repos/$OWNER/ishtar-device/releases/assets/$inid\" -o ../ishtar-gpu-build-inputs.tar.gz\ntar -xzf ../ishtar-gpu-firmware.tar.gz -C .cache/firmware/sheng-gpu\ntar -xzf ../ishtar-gpu-build-inputs.tar.gz -C .\ngit checkout -- scripts\nfind .cache/firmware/sheng-gpu -type f | sort\ntest -s .cache/firmware/sheng-gpu/qcom/gmu_gen70200.bin\ntest -s .cache/firmware/sheng-gpu/qcom/a740_sqe.fw\ntest -s .cache/firmware/sheng-gpu/qcom/sm8550/sheng/a740_zap.mbn\ntest -s .cache/ishtar/ishtar.dtb\ntest -s scripts/build-ishtar-gpu-inputs.py\ntest -s scripts/build-adreno740-kits.py\ntest -s kits/sheng/ShengGmuVotes.c\n# The gpu-runtime branch carries coherent gitlinks; do not overwrite them with old pins.\nfor d in kits/Sm8550Platform kits/AdrenoFirmware kits/AdrenoPM4 kits/ArmSmmu4K drivers/Adreno740 drivers/AdrenoMetal; do\n  git submodule update --init --depth 1 \"$d\"\ndone\ngit submodule status kits/Sm8550Platform drivers/Adreno740 drivers/AdrenoMetal kits/ArmSmmu4K\npython3 scripts/build-ishtar-gpu-inputs.py\nfind build/sheng-gmu build/sheng-gpu-smmu -type f | sort\n# unixnu.cli assembles a separate staged tree and copies scripts there, but it does not\n# copy ignored cache/build inputs. Pre-seed the exact tree used by this board profile.\ntree=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree\nmkdir -p \"$tree/kits\" \"$tree/build/sheng-gmu\" \"$tree/build/sheng-gpu-smmu\"             \"$tree/.cache/ishtar\" \"$tree/.cache/adreno-source\" \"$tree/.cache/linux-dts\"             \"$tree/.cache/firmware/sheng-gpu/qcom\" \"$tree/.cache/firmware/sheng-gpu/qcom/sm8550/sheng\"\ncp build/sheng-gmu/*.h \"$tree/build/sheng-gmu/\"\ncp build/sheng-gpu-smmu/*.h \"$tree/build/sheng-gpu-smmu/\"\ncp .cache/ishtar/ishtar.dtb \"$tree/.cache/ishtar/ishtar.dtb\"\ncp -a .cache/adreno-source/. \"$tree/.cache/adreno-source/\"\ncp -a .cache/linux-dts/. \"$tree/.cache/linux-dts/\"\ncp -a .cache/firmware/sheng-gpu/. \"$tree/.cache/firmware/sheng-gpu/\"\nmkdir -p \"$tree/kits/sheng\"\ncp kits/sheng/ShengGmuVotes.c \"$tree/kits/sheng/ShengGmuVotes.c\"\ncp kits/sheng/audit-adreno-platform.py \"$tree/kits/sheng/audit-adreno-platform.py\"\ntest -s \"$tree/build/sheng-gmu/ShengGmuSource.h\"\ntest -s \"$tree/kits/sheng/ShengGmuVotes.c\"\ntest -s \"$tree/.cache/firmware/sheng-gpu/qcom/sm8550/sheng/a740_zap.mbn\"\n"
