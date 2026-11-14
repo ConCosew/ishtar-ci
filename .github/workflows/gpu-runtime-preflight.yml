@@ -60,7 +60,7 @@ jobs:
         working-directory: unixnu
         run: |
           set -euo pipefail
-          for d in drivers/Adreno740 drivers/AdrenoMetal kits/AdrenoPM4 kits/AdrenoFirmware kits/ArmSmmu4K; do
+          for d in drivers/Adreno740 drivers/AdrenoMetal drivers/GopFramebuffer kits/AdrenoPM4 kits/AdrenoFirmware kits/ArmSmmu4K; do
             git submodule update --init --depth 1 "$d"
           done
           # The upstream components.toml pins are stale; its gitlinks are the real same-generation components.
