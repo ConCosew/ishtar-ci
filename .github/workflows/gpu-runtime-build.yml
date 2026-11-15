@@ -278,6 +278,54 @@ jobs:
         PY
 
         '
+    - name: Publish the GPU runtime boot image
+      if: ${{ success() }}
+      working-directory: unixnu
+      env:
+        GH_TOKEN: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
+        TAG: gpu-runtime-${{ github.run_id }}
+      run: 'set -euo pipefail
+
+        B=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/boot/boot.img
+
+        K=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/kernel/kernel.macho
+
+        P=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/payload/payload.img
+
+        test -s "$B" && test -s "$K" && test -s "$P"
+
+        test -s out/gpuaddon.bin && test -s out/owner-trust.bundle
+
+        ( cd out && shasum -a 256 gpuaddon.bin owner-trust.bundle ) > gpu-runtime-sha256.txt
+
+        shasum -a 256 "$B" "$K" "$P" >> gpu-runtime-sha256.txt
+
+        cat > gpu-runtime-notes.md <<''NOTES''
+
+        Compile-only GPU runtime checkpoint.
+
+
+        - Built from the isolated `gpu-runtime` branches; mainline `dual-boot` / `ishtar-build` are untouched.
+
+        - Kernel args include `sheng-gpu-addon=1`; payload carries the GPU addon and owner trust bundle.
+
+        - Adreno740 `54b41b8f`, AdrenoMetal `73d582fd`, ArmSmmu4K `83969cd8`, Sm8550Platform `a9f45dc6`, translator `555b13d5`.
+
+        - native __DATA is fitted before Libm''s retained __DATA with the fault-scanner chunk reduction.
+
+        - NOT booted. No GPU, Metal, DPU, touch or WiFi hardware behaviour is validated by this build.
+
+        - Boot with `fastboot boot` only. Do not flash this image and do not flash userdata.
+
+        NOTES
+
+        gh release create "$TAG" --repo ConCosew/ishtar-device --target gpu-runtime --title "GPU runtime $TAG" --notes-file gpu-runtime-notes.md
+
+        gh release upload "$TAG" "$B" "$K" "$P" out/gpuaddon.bin out/owner-trust.bundle gpu-runtime-sha256.txt --repo ConCosew/ishtar-device --clobber
+
+        echo "published GPU runtime release $TAG"
+
+        '
     - name: GPU runtime build report
       if: ${{ always() }}
       working-directory: unixnu
