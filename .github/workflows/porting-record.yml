@@ -18,8 +18,6 @@ jobs:
           path: device
           fetch-depth: 0
           persist-credentials: false
-      - name: Fetch the comparison branch
-        run: git -C device fetch --no-tags origin main:refs/remotes/origin/main
       - uses: actions/checkout@v4
         with:
           repository: UniXNU/UniXNU
