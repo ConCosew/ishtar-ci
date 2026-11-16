@@ -17,7 +17,7 @@ permissions:
   contents: read
 concurrency:
   group: p4-checkpoint
-  cancel-in-progress: 'false'
+  cancel-in-progress: false
 jobs:
   checkpoint:
     runs-on: macos-26
