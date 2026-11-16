@@ -217,6 +217,10 @@ jobs:
         echo "kernel.macho $(stat -f%z "$K") bytes sha256 $(shasum -a 256 "$K" | cut -d'' '' -f1)" | tee -a ../p4-report/artifacts.txt
 
         '
+    - name: Kernel bootstrap failure diagnostics
+      if: ${{ failure() }}
+      working-directory: unixnu
+      run: "set -uo pipefail\nlogs=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/logs\nfor f in \"$logs/kernel-bootstrap.log\" \"$logs/kernel.log\"; do\n  if [ -f \"$f\" ]; then\n    echo \"Diagnostic log: $f\"\n    grep -n -E -A 5 -B 3 'error:|fatal error:|Error [0-9]|missing terminating|unterminated' \"$f\" | tail -180 || true\n    tail -60 \"$f\"\n  fi\ndone\n"
     - name: GPU prelink segment geometry (analysis only)
       working-directory: unixnu
       run: "set -uo pipefail\nN=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf\nC=out/ipsw/24A446/kernelcache.decompressed\ntest -f \"$N\" || { echo \"native Mach-O absent\"; exit 0; }\npython3 - \"$N\" \"$C\" <<'PYEOF'\nimport sys\nsys.path.insert(0, 'kits/XnuPrelink')\nfrom pathlib import Path\nfrom kc_image import Image\nn=Image(Path(sys.argv[1]).read_bytes(),0)\nc=Image(Path(sys.argv[2]).read_bytes(),0)\nprint('native base',hex(n.base))\nfor s in n.segments:\n    if s['size']:print('native',s['name'],'va',hex(s['va']),'size',hex(s['size']),'file',hex(s['filesize']))\nfor s in n.sections:\n    if s['segment'] in ('__DATA_CONST','__LASTDATA_CONST','__DATA','__TEXT'):\n      print('section',s['segment'],s['name'],'va',hex(s['va']),'size',hex(s['size']))\nroots={s['name']:s for s in c.segments}\nfor name in ('__DATA_CONST','__DATA','__TEXT_EXEC'):\n    r=roots[name];print('cache',name,hex(r['va']),hex(r['size']))\nPYEOF\n"
