@@ -81,7 +81,21 @@ jobs:
         '
     - name: Preflight (fail in seconds, before the expensive steps)
       working-directory: unixnu
-      run: "set -euo pipefail\necho \"== duplicate source appends in build-sheng-source-storage.py ==\"\npython3 - <<'PY'\nimport re\nfrom collections import Counter\nfrom pathlib import Path\np = Path('scripts/build-sheng-source-storage.py')\nt = p.read_text()\nnames = re.findall(r\"device_source\\('([^']+)'\\)\", t)\nappends = re.findall(r\"sources\\.append\\(device_source\\('([^']+)'\\)\\)\", t)\ndup = {k: v for k, v in Counter(appends).items() if v > 1}\nprint('append count:', len(appends))\nprint('duplicates:', dup or 'none')\nif dup:\n    raise SystemExit('duplicate archive sources: %s' % dup)\nprint('PREFLIGHT duplicate-source OK')\nPY\necho \"== GopFramebuffer pin consistency ==\"\npython3 - <<'PY'\nimport re, subprocess\nfrom pathlib import Path\ncomp = Path('components.toml').read_text()\nm = re.search(r'id = \"GopFramebuffer\"(.{0,600}?)revision = \"([0-9a-f]{40})\"', comp, re.S)\ncomp_pin = m.group(2) if m else None\nlink = subprocess.run(['git', 'ls-tree', 'HEAD', 'drivers/GopFramebuffer'],\n                      capture_output=True, text=True).stdout.split()\nlink_pin = link[2] if len(link) >= 3 else None\nprint('components.toml pin:', comp_pin)\nprint('drivers gitlink    :', link_pin)\nif comp_pin != link_pin:\n    raise SystemExit('pin mismatch: the builder compiles the gitlink, so they must match')\nprint('PREFLIGHT pin OK')\nPY\necho \"== GopFramebuffer source symbols ==\"\ngit submodule update --init --depth 1 drivers/GopFramebuffer 2>&1 | tail -2\npython3 - <<'PY'\nimport subprocess\nfrom pathlib import Path\nneed = ['native_gop_virtual', 'native_legacy_direct_snapshot']\nforbid = ['native_adreno_fences']\ntext = ''\nfor f in ('NativeLegacyDisplay.cpp', 'NativeGOPPresenter.cpp'):\n    p = Path('drivers/GopFramebuffer') / f\n    if p.is_file():\n        text += p.read_text()\nif not text:\n    raise SystemExit('drivers/GopFramebuffer is empty; submodules not initialised')\nfor sym in need:\n    present = sym in text or 'native_legacy_direct' in text\n    print(f'{\"have\" if present else \"MISSING\"} {sym}')\n    if not present:\n        raise SystemExit(f'{sym} not found in the pinned GopFramebuffer')\nfor sym in forbid:\n    if sym in text:\n        raise SystemExit(f'{sym} is referenced but stage 0 builds no Adreno740')\nprint('PREFLIGHT symbols OK')\nPY\n\necho \"== P3/T8 userdata static prerequisites ==\"\npython3 - <<'PY'\nimport tomllib\nfrom pathlib import Path\nprof = tomllib.loads(Path('profiles/os/ios-27.0.1-24A446/profile.toml').read_text())\nboard = tomllib.loads(Path('../device/board.toml').read_text())\nu = board['userdata']\ncap = (u['last_lba'] - u['first_lba'] + 1) * u.get('lba_bytes', 4096)\nw = prof['userdata']['windows']\nassert w and w[0]['name'] == 'OS', w\nassert cap > 17 * 2**30, cap\nassert Path('scripts/unixnu/userdata.py').is_file()\nprint('PREFLIGHT userdata OK: capacity %.1f GiB, windows %s' % (cap / 2**30, [x['name'] for x in w]))\nPY\n\nif [ \"$BUILD_USERDATA\" = true ]; then\n  echo \"== object names expected by the iOS 27 source storage ==\"\n  python3 - <<'PY'\nimport tomllib\nfrom pathlib import Path\nprof = tomllib.loads(Path('profiles/os/ios-27.0.1-24A446/profile.toml').read_text())\nnames = [w['name'] + '.vroot' for w in prof['userdata']['windows']]\nassert names == ['OS.vroot', 'SystemOS.vroot'], names\nprint('PREFLIGHT vroot objects OK:', names)\nPY\nfi\n\necho \"== uc2022 entitlement patch ==\"\ngrep -q 'gIOUserClientEntitlementsKey' ../device/patches/xnu-12377/ishtar-uc2022-default-locking.patch\necho \"PREFLIGHT uc2022 OK\"\n\necho \"== uc2022 terminate fallback ==\"\ngrep -q 'client->terminate();' ../device/patches/xnu-12377/ishtar-uc2022-default-locking.patch\necho \"PREFLIGHT uc2022-terminate OK\"\n"
+      run: "set -euo pipefail\necho \"== duplicate source appends in build-sheng-source-storage.py ==\"\npython3 - <<'PY'\nimport re\nfrom collections import Counter\nfrom pathlib import Path\np = Path('scripts/build-sheng-source-storage.py')\nt = p.read_text()\nnames = re.findall(r\"device_source\\('([^']+)'\\)\", t)\nappends = re.findall(r\"sources\\.append\\(device_source\\('([^']+)'\\)\\)\", t)\ndup = {k: v for k, v in Counter(appends).items() if v > 1}\nprint('append count:', len(appends))\nprint('duplicates:', dup or 'none')\nif dup:\n    raise SystemExit('duplicate archive sources: %s' % dup)\nprint('PREFLIGHT duplicate-source OK')\nPY\necho \"== GopFramebuffer pin consistency ==\"\npython3 - <<'PY'\nimport re, subprocess\nfrom pathlib import Path\ncomp = Path('components.toml').read_text()\nm = re.search(r'id = \"GopFramebuffer\"(.{0,600}?)revision = \"([0-9a-f]{40})\"', comp, re.S)\ncomp_pin = m.group(2) if m else None\nlink = subprocess.run(['git', 'ls-tree', 'HEAD', 'drivers/GopFramebuffer'],\n                      capture_output=True, text=True).stdout.split()\nlink_pin = link[2] if len(link) >= 3 else None\nprint('components.toml pin:', comp_pin)\nprint('drivers gitlink    :', link_pin)\nif comp_pin != link_pin:\n    raise SystemExit('pin mismatch: the builder compiles the gitlink, so they must match')\nprint('PREFLIGHT pin OK')\nPY\necho \"== GopFramebuffer source symbols ==\"\ngit submodule update --init --depth 1 drivers/GopFramebuffer 2>&1 | tail -2\npython3 - <<'PY'\nimport subprocess\nfrom pathlib import Path\nneed = ['native_gop_virtual', 'native_legacy_direct_snapshot']\nforbid = ['native_adreno_fences']\ntext = ''\nfor f in ('NativeLegacyDisplay.cpp', 'NativeGOPPresenter.cpp'):\n    p = Path('drivers/GopFramebuffer') / f\n    if p.is_file():\n        text += p.read_text()\nif not text:\n    raise SystemExit('drivers/GopFramebuffer is empty; submodules not initialised')\nfor sym in need:\n    present = sym in text or 'native_legacy_direct' in text\n    print(f'{\"have\" if present else \"MISSING\"} {sym}')\n    if not present:\n        raise SystemExit(f'{sym} not found in the pinned GopFramebuffer')\nfor sym in forbid:\n    if sym in text:\n        raise SystemExit(f'{sym} is referenced but stage 0 builds no Adreno740')\nprint('PREFLIGHT symbols OK')\nPY\n\necho \"== P3/T8 userdata static prerequisites ==\"\npython3 - <<'PY'\nimport tomllib\nfrom pathlib import Path\nprof = tomllib.loads(Path('profiles/os/ios-27.0.1-24A446/profile.toml').read_text())\nboard = tomllib.loads(Path('../device/board.toml').read_text())\nu = board['userdata']\ncap = (u['last_lba'] - u['first_lba'] + 1) * u.get('lba_bytes', 4096)\nw = prof['userdata']['windows']\nassert w and w[0]['name'] == 'OS', w\nassert cap > 17 * 2**30, cap\nassert Path('scripts/unixnu/userdata.py').is_file()\nprint('PREFLIGHT userdata OK: capacity %.1f GiB, windows %s' % (cap / 2**30, [x['name'] for x in w]))\nPY\n\nif [ \"$BUILD_USERDATA\" = true ]; then\n  echo \"== object names expected by the iOS 27 source storage ==\"\n  python3 - <<'PY'\nimport tomllib\nfrom pathlib import Path\nprof = tomllib.loads(Path('profiles/os/ios-27.0.1-24A446/profile.toml').read_text())\nnames = [w['name'] + '.vroot' for w in prof['userdata']['windows']]\nassert names == ['OS.vroot', 'SystemOS.vroot'], names\nprint('PREFLIGHT vroot objects OK:', names)\nPY\nfi\n\necho \"== uc2022 entitlement patch ==\"\ngrep -q 'gIOUserClientEntitlementsKey' ../device/patches/xnu-12377/ishtar-uc2022-default-locking.patch\necho \"PREFLIGHT uc2022 OK\"\n\necho \"== restored open cleanup ==\"\nif grep -q 'client->terminate();' ../device/patches/xnu-12377/ishtar-uc2022-default-locking.patch; then\n  echo \"unexpected terminate workaround\"; exit 1\nfi\necho \"PREFLIGHT normal cleanup OK\"\n"
+    - name: Verify reviewed constructor identity before downloads
+      working-directory: unixnu
+      run: |
+        set -euo pipefail
+        python3 - <<'PY'
+        import json
+        from pathlib import Path
+        fixture = json.loads(Path('fixtures/fileset-fa07057b-symbols.json').read_text())
+        entries = [e for e in fixture['functions'] if e['original'] == '0xfffffff00b35cac0']
+        assert len(entries) == 1
+        assert entries[0]['native_symbol'] == '__ZN12IOUserClientC2EPK11OSMetaClass'
+        assert entries[0]['original_sha256'] == '9d1511bca55aae2b728ad62a4ef063d4214610a266d77347e77ac2039bfb13d3'
+        print('PREFLIGHT constructor identity OK')
+        PY
     - name: Private inputs (live FDT)
       working-directory: unixnu
       run: "set -uo pipefail\nmkdir -p out/ipsw/24A446\nrel=$(curl -fsSL -H \"Authorization: Bearer $GH_PAT\" \\\n  \"https://api.github.com/repos/$OWNER/ishtar-device/releases/tags/checkpoint-inputs-2026-11-06\")\naid=$(printf '%s' \"$rel\" | jq -r '.assets[] | select(.name==\"ishtar.dtb\") | .id')\ncurl -fsSL -H \"Authorization: Bearer $GH_PAT\" -H \"Accept: application/octet-stream\" \\\n  \"https://api.github.com/repos/$OWNER/ishtar-device/releases/assets/$aid\" -o out/ipsw/24A446/ishtar.dtb\nsize=$(stat -f%z out/ipsw/24A446/ishtar.dtb)\necho \"live FDT: $size bytes sha256 $(shasum -a 256 out/ipsw/24A446/ishtar.dtb | cut -d' ' -f1)\" | tee ../p4-report/inputs.txt\ntest \"$size\" = \"901987\"\n"
@@ -223,6 +237,11 @@ jobs:
         echo "kernel.macho $(stat -f%z "$K") bytes sha256 $(shasum -a 256 "$K" | cut -d'' '' -f1)" | tee -a ../p4-report/artifacts.txt
 
         '
+    - name: Verify APFS constructor binding
+      working-directory: unixnu
+      run: |
+        set -euo pipefail
+        python3 ../ishtar-ci/tools/check-apfs-constructor.py --module-dir kits/XnuPrelink --original out/ipsw/24A446/kernelcache.decompressed --kernel out/ishtar/ios-27.0.1-24A446/ishtar_ios27/kernel/kernel.macho --report ../p4-report/apfs-constructor.json
     - name: Kernel bootstrap failure diagnostics
       if: ${{ failure() }}
       working-directory: unixnu
@@ -308,7 +327,7 @@ jobs:
 
         ( cd out && shasum -a 256 gpuaddon.bin owner-trust.bundle ) > gpu-runtime-sha256.txt
 
-        shasum -a 256 "$B" "$K" "$P" >> gpu-runtime-sha256.txt
+        shasum -a 256 "$B" "$K" "$P" ../p4-report/apfs-constructor.json >> gpu-runtime-sha256.txt
 
         cat > gpu-runtime-notes.md <<''NOTES''
 
@@ -323,6 +342,10 @@ jobs:
 
         - native __DATA is fitted before Libm''s retained __DATA with the fault-scanner chunk reduction.
 
+        - Corrects the IOUserClient constructor binding that omitted retainCount initialization. Restores normal open-failure release and removes the terminate experiment.
+
+        - Includes apfs-constructor.json: post-prelink verification of the retained GOT bindings and native constructor chain. Device confirmation of the APFS panic fix is pending.
+
         - NOT booted. No GPU, Metal, DPU, touch or WiFi hardware behaviour is validated by this build.
 
         - Boot with `fastboot boot` only. Do not flash this image and do not flash userdata.
@@ -331,7 +354,7 @@ jobs:
 
         gh release create "$TAG" --repo ConCosew/ishtar-device --target gpu-runtime --title "GPU runtime $TAG" --notes-file gpu-runtime-notes.md --prerelease --latest=false
 
-        gh release upload "$TAG" "$B" "$K" "$P" out/gpuaddon.bin out/owner-trust.bundle gpu-runtime-sha256.txt --repo ConCosew/ishtar-device --clobber
+        gh release upload "$TAG" "$B" "$K" "$P" out/gpuaddon.bin out/owner-trust.bundle gpu-runtime-sha256.txt ../p4-report/apfs-constructor.json --repo ConCosew/ishtar-device --clobber
 
         echo "published GPU runtime release $TAG"
 
