@@ -412,7 +412,7 @@ jobs:
 
         python3 - <<''PY''
 
-        import hashlib, json
+        import json
 
         from pathlib import Path
 
@@ -446,9 +446,7 @@ jobs:
 
         base[''payload_checks''] = ''PASS''
 
-        Path(''../p4-report/data-baseline.json'').write_text(json.dumps(base, indent=2) + ''
-
-        '')
+        Path(''../p4-report/data-baseline.json'').write_text(json.dumps(base, indent=2) + ''\n'')
 
         print(''controlled baseline payload PASS'')
 
