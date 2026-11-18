@@ -96,6 +96,21 @@ jobs:
         assert entries[0]['original_sha256'] == '9d1511bca55aae2b728ad62a4ef063d4214610a266d77347e77ac2039bfb13d3'
         print('PREFLIGHT constructor identity OK')
         PY
+    - name: Verify reviewed VFS getter identities before downloads
+      working-directory: unixnu
+      run: |
+        set -euo pipefail
+        python3 - <<'PY'
+        import json
+        from pathlib import Path
+        fixture = json.loads(Path('fixtures/fileset-fa07057b-symbols.json').read_text())
+        expected = {'0xfffffff00add321c': '_vfs_context_ucred', '0xfffffff00ad7ab64': '_bufattr_cpoff'}
+        for address, name in expected.items():
+            rows = [e for e in fixture['functions'] if e['original'] == address]
+            assert len(rows) == 1 and rows[0]['native_symbol'] == name
+            assert rows[0]['original_sha256'] == '91fe54c083eb0b9168494a7cca1b46d068b795c7ba94ea2e14d0c8f9d165b9d5'
+        print('PREFLIGHT VFS getter identities OK')
+        PY
     - name: Private inputs (live FDT)
       working-directory: unixnu
       run: "set -uo pipefail\nmkdir -p out/ipsw/24A446\nrel=$(curl -fsSL -H \"Authorization: Bearer $GH_PAT\" \\\n  \"https://api.github.com/repos/$OWNER/ishtar-device/releases/tags/checkpoint-inputs-2026-11-06\")\naid=$(printf '%s' \"$rel\" | jq -r '.assets[] | select(.name==\"ishtar.dtb\") | .id')\ncurl -fsSL -H \"Authorization: Bearer $GH_PAT\" -H \"Accept: application/octet-stream\" \\\n  \"https://api.github.com/repos/$OWNER/ishtar-device/releases/assets/$aid\" -o out/ipsw/24A446/ishtar.dtb\nsize=$(stat -f%z out/ipsw/24A446/ishtar.dtb)\necho \"live FDT: $size bytes sha256 $(shasum -a 256 out/ipsw/24A446/ishtar.dtb | cut -d' ' -f1)\" | tee ../p4-report/inputs.txt\ntest \"$size\" = \"901987\"\n"
@@ -242,6 +257,11 @@ jobs:
       run: |
         set -euo pipefail
         python3 ../ishtar-ci/tools/check-apfs-constructor.py --module-dir kits/XnuPrelink --original out/ipsw/24A446/kernelcache.decompressed --kernel out/ishtar/ios-27.0.1-24A446/ishtar_ios27/kernel/kernel.macho --report ../p4-report/apfs-constructor.json
+    - name: Verify APFS VFS credential binding
+      working-directory: unixnu
+      run: |
+        set -euo pipefail
+        python3 ../ishtar-ci/tools/check-apfs-vfs-context.py --module-dir kits/XnuPrelink --original out/ipsw/24A446/kernelcache.decompressed --kernel out/ishtar/ios-27.0.1-24A446/ishtar_ios27/kernel/kernel.macho --report ../p4-report/apfs-vfs-context.json
     - name: Kernel bootstrap failure diagnostics
       if: ${{ failure() }}
       working-directory: unixnu
@@ -327,7 +347,7 @@ jobs:
 
         ( cd out && shasum -a 256 gpuaddon.bin owner-trust.bundle ) > gpu-runtime-sha256.txt
 
-        shasum -a 256 "$B" "$K" "$P" ../p4-report/apfs-constructor.json >> gpu-runtime-sha256.txt
+        shasum -a 256 "$B" "$K" "$P" ../p4-report/apfs-constructor.json ../p4-report/apfs-vfs-context.json >> gpu-runtime-sha256.txt
 
         cat > gpu-runtime-notes.md <<''NOTES''
 
@@ -346,6 +366,8 @@ jobs:
 
         - Includes apfs-constructor.json: post-prelink verification of the retained GOT bindings and native constructor chain. Device confirmation of the APFS panic fix is pending.
 
+        - Maps the APFS VFS credential getter used by getattrlistbulk after Swipe to upgrade; includes apfs-vfs-context.json with emitted binding checks. The earlier constructor fix reached the upgrade UI on the owner device; this new fix still needs a device test.
+
         - NOT booted. No GPU, Metal, DPU, touch or WiFi hardware behaviour is validated by this build.
 
         - Boot with `fastboot boot` only. Do not flash this image and do not flash userdata.
@@ -354,7 +376,7 @@ jobs:
 
         gh release create "$TAG" --repo ConCosew/ishtar-device --target gpu-runtime --title "GPU runtime $TAG" --notes-file gpu-runtime-notes.md --prerelease --latest=false
 
-        gh release upload "$TAG" "$B" "$K" "$P" out/gpuaddon.bin out/owner-trust.bundle gpu-runtime-sha256.txt ../p4-report/apfs-constructor.json --repo ConCosew/ishtar-device --clobber
+        gh release upload "$TAG" "$B" "$K" "$P" out/gpuaddon.bin out/owner-trust.bundle gpu-runtime-sha256.txt ../p4-report/apfs-constructor.json ../p4-report/apfs-vfs-context.json --repo ConCosew/ishtar-device --clobber
 
         echo "published GPU runtime release $TAG"
 
