@@ -302,16 +302,32 @@ jobs:
     - name: Build the safe-checkpoint payload
       working-directory: unixnu
       run: "set -uo pipefail\nTC=build/original-static-system-trust/original-static-system.bundle\nSEED=$(sed 's/^DATA_SEED=//' ../p4-report/data-seed.path)\ntest -s \"$SEED\" || { echo \"FATAL: Data seed missing for payload: $SEED\"; exit 1; }\n./unixnu build payload -D ../device --owner-trust-cache out/owner-trust.bundle --gpu-addon out/gpuaddon.bin --data-ramdisk \"$SEED\" --unique-chip-id \"$UNIXNU_UNIQUE_CHIP_ID\" --kernel-arg sheng-gpu-addon=1 --skip-setup 2>&1 | tee -a ../p4-report/build.log\nP=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/payload/payload.json\ntest -f \"$P\" || { echo \"payload.json MISSING\"; exit 1; }\necho \"== kernel arg safety ==\" | tee ../p4-report/safety.txt\nfor bad in sheng-data-persist sheng-data-reset native-ufs-root native-source-storage; do\n  if grep -q \"$bad\" \"$P\"; then echo \"UNSAFE $bad present\" | tee -a ../p4-report/safety.txt; else echo \"SAFE $bad absent\" | tee -a ../p4-report/safety.txt; fi\ndone\nif [ \"gpu-runtime\" = \"safe-checkpoint\" ]; then\n  ! grep -q -E 'sheng-data-persist|sheng-data-reset|native-ufs-root|native-source-storage' \"$P\"\nelse\n  echo \"dual-boot/persistent root: root-write args are expected on gpu-runtime\"\nfi\n"
-    - name: Verify payload skipped Setup migration
+    - name: Verify payload Setup and no-auto-dim seed policy
       working-directory: unixnu
       run: |
         set -euo pipefail
         python3 - <<'PY'
-        import json
+        import hashlib, json
         from pathlib import Path
-        report = json.loads(Path('out/ishtar/ios-27.0.1-24A446/ishtar_ios27/payload/payload.json').read_text())
-        assert report.get('skip_setup') is True, report
-        print('PAYLOAD skip_setup=true data=', report.get('data_ramdisk_sha256'))
+        payload = Path('out/ishtar/ios-27.0.1-24A446/ishtar_ios27/payload')
+        report = json.loads((payload / 'payload.json').read_text())
+        assert report.get('skip_setup') is True, 'Setup transform not requested'
+        seeds = list(payload.glob('data-skip-setup-*.dbr'))
+        assert len(seeds) == 1, 'Expected exactly one transformed seed'
+        seed = seeds[0]
+        policy = json.loads(seed.with_suffix('.json').read_text())
+        assert policy.get('build') == '24A446', 'Wrong seed build'
+        assert policy.get('no_auto_dim') is True, 'no-auto-dim not applied by helper'
+        with seed.open('rb') as f:
+            digest = hashlib.file_digest(f, 'sha256').hexdigest()
+        assert report.get('data_ramdisk_sha256') == digest, 'Payload used another seed'
+        evidence = {'result': 'PASS', 'build': policy['build'],
+                    'no_auto_dim': True, 'skip_setup': True,
+                    'data_ramdisk_sha256': digest, 'hardware_verified': False,
+                    'persistence': 'Changed seed may not resume the old overlay; old store kept without reset',
+                    'input_driver_integrated': False}
+        Path('../p4-report/data-setup.json').write_text(json.dumps(evidence, indent=2) + '\n')
+        print('PAYLOAD Setup/no-auto-dim helper report and seed hash verified:', digest)
         PY
     - name: bootimg (header v0)
       working-directory: unixnu
@@ -370,7 +386,7 @@ jobs:
 
         ( cd out && shasum -a 256 gpuaddon.bin owner-trust.bundle ) > gpu-runtime-sha256.txt
 
-        shasum -a 256 "$B" "$K" "$P" ../p4-report/apfs-constructor.json ../p4-report/apfs-vfs-context.json >> gpu-runtime-sha256.txt
+        shasum -a 256 "$B" "$K" "$P" ../p4-report/apfs-constructor.json ../p4-report/apfs-vfs-context.json ../p4-report/data-setup.json >> gpu-runtime-sha256.txt
 
         cat > gpu-runtime-notes.md <<''NOTES''
 
@@ -391,6 +407,10 @@ jobs:
 
         - Maps the APFS VFS credential getter used by getattrlistbulk after Swipe to upgrade; includes apfs-vfs-context.json with emitted binding checks. The earlier constructor fix reached the upgrade UI on the owner device; this new fix still needs a device test.
 
+        - Applies the configured skip-setup and no-auto-dim seed helper for 24A446; data-setup.json verifies the helper report and packed seed hash. Screen-on behaviour and boot speed remain unverified.
+
+        - No ishtar ST FTS/GPI/HID input driver is included. A changed seed preserves the old overlay but may run temporary Data rather than resume it. Do not reset Data for this test.
+
         - NOT booted. No GPU, Metal, DPU, touch or WiFi hardware behaviour is validated by this build.
 
         - Boot with `fastboot boot` only. Do not flash this image and do not flash userdata.
@@ -399,7 +419,7 @@ jobs:
 
         gh release create "$TAG" --repo ConCosew/ishtar-device --target gpu-runtime --title "GPU runtime $TAG" --notes-file gpu-runtime-notes.md --prerelease --latest=false
 
-        gh release upload "$TAG" "$B" "$K" "$P" out/gpuaddon.bin out/owner-trust.bundle gpu-runtime-sha256.txt ../p4-report/apfs-constructor.json ../p4-report/apfs-vfs-context.json --repo ConCosew/ishtar-device --clobber
+        gh release upload "$TAG" "$B" "$K" "$P" out/gpuaddon.bin out/owner-trust.bundle gpu-runtime-sha256.txt ../p4-report/apfs-constructor.json ../p4-report/apfs-vfs-context.json ../p4-report/data-setup.json --repo ConCosew/ishtar-device --clobber
 
         echo "published GPU runtime release $TAG"
 
