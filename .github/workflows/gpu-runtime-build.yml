@@ -42,7 +42,7 @@ jobs:
       uses: actions/checkout@v4
       with:
         repository: ConCosew/ishtar-unixnu
-        ref: gpu-runtime-diag
+        ref: gpu-runtime-show
         token: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
         path: unixnu
         fetch-depth: 0
@@ -51,7 +51,7 @@ jobs:
       uses: actions/checkout@v4
       with:
         repository: ConCosew/ishtar-device
-        ref: gpu-runtime-diag
+        ref: gpu-runtime-show
         token: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
         path: device
         persist-credentials: 'false'
@@ -312,7 +312,7 @@ jobs:
       working-directory: unixnu
       env:
         GH_TOKEN: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
-        TAG: gpu-runtime-diag-${{ github.run_id }}
+        TAG: gpu-runtime-show-${{ github.run_id }}
       run: 'set -euo pipefail
 
         B=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/boot/boot.img
@@ -339,6 +339,8 @@ jobs:
         - Kernel args include `sheng-gpu-addon=1`, `sheng-log=1`, and `boot-ui-trace=1`; payload carries the GPU addon and owner trust bundle.
 
         - The UFS diagnostic round header is `#slot ... t=<seconds> ...`; successive rounds distinguish frozen scanout from a stalled kernel. This is diagnostic evidence, not a performance claim.
+
+        - `ishtar-show=30` deliberately panics after the diagnostic writer reaches 30 seconds, showing the current progress and message-buffer snapshot. This image is for diagnosis and is not a success image.
 
         - Adreno740 `54b41b8f`, AdrenoMetal `73d582fd`, ArmSmmu4K `83969cd8`, Sm8550Platform `a9f45dc6`, translator `555b13d5`.
 
