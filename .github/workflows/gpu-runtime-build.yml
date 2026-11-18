@@ -111,6 +111,18 @@ jobs:
             assert rows[0]['original_sha256'] == '91fe54c083eb0b9168494a7cca1b46d068b795c7ba94ea2e14d0c8f9d165b9d5'
         print('PREFLIGHT VFS getter identities OK')
         PY
+    - name: Verify Data setup policy is requested
+      working-directory: unixnu
+      run: |
+        set -euo pipefail
+        python3 - <<'PY'
+        import tomllib
+        from pathlib import Path
+        b = tomllib.loads(Path('../device/board.toml').read_text())['payload']
+        assert b.get('skip_setup_tool') == 'scripts/seed-data-skip-setup.py'
+        assert b.get('skip_setup_args') == ['--build=24A446', '--no-auto-dim']
+        print('PREFLIGHT skip-setup policy OK')
+        PY
     - name: Private inputs (live FDT)
       working-directory: unixnu
       run: "set -uo pipefail\nmkdir -p out/ipsw/24A446\nrel=$(curl -fsSL -H \"Authorization: Bearer $GH_PAT\" \\\n  \"https://api.github.com/repos/$OWNER/ishtar-device/releases/tags/checkpoint-inputs-2026-11-06\")\naid=$(printf '%s' \"$rel\" | jq -r '.assets[] | select(.name==\"ishtar.dtb\") | .id')\ncurl -fsSL -H \"Authorization: Bearer $GH_PAT\" -H \"Accept: application/octet-stream\" \\\n  \"https://api.github.com/repos/$OWNER/ishtar-device/releases/assets/$aid\" -o out/ipsw/24A446/ishtar.dtb\nsize=$(stat -f%z out/ipsw/24A446/ishtar.dtb)\necho \"live FDT: $size bytes sha256 $(shasum -a 256 out/ipsw/24A446/ishtar.dtb | cut -d' ' -f1)\" | tee ../p4-report/inputs.txt\ntest \"$size\" = \"901987\"\n"
@@ -289,7 +301,18 @@ jobs:
         '
     - name: Build the safe-checkpoint payload
       working-directory: unixnu
-      run: "set -uo pipefail\nTC=build/original-static-system-trust/original-static-system.bundle\nSEED=$(sed 's/^DATA_SEED=//' ../p4-report/data-seed.path)\ntest -s \"$SEED\" || { echo \"FATAL: Data seed missing for payload: $SEED\"; exit 1; }\n./unixnu build payload -D ../device --owner-trust-cache out/owner-trust.bundle --gpu-addon out/gpuaddon.bin --data-ramdisk \"$SEED\" --unique-chip-id \"$UNIXNU_UNIQUE_CHIP_ID\" --kernel-arg sheng-gpu-addon=1 2>&1 | tee -a ../p4-report/build.log\nP=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/payload/payload.json\ntest -f \"$P\" || { echo \"payload.json MISSING\"; exit 1; }\necho \"== kernel arg safety ==\" | tee ../p4-report/safety.txt\nfor bad in sheng-data-persist sheng-data-reset native-ufs-root native-source-storage; do\n  if grep -q \"$bad\" \"$P\"; then echo \"UNSAFE $bad present\" | tee -a ../p4-report/safety.txt; else echo \"SAFE $bad absent\" | tee -a ../p4-report/safety.txt; fi\ndone\nif [ \"gpu-runtime\" = \"safe-checkpoint\" ]; then\n  ! grep -q -E 'sheng-data-persist|sheng-data-reset|native-ufs-root|native-source-storage' \"$P\"\nelse\n  echo \"dual-boot/persistent root: root-write args are expected on gpu-runtime\"\nfi\n"
+      run: "set -uo pipefail\nTC=build/original-static-system-trust/original-static-system.bundle\nSEED=$(sed 's/^DATA_SEED=//' ../p4-report/data-seed.path)\ntest -s \"$SEED\" || { echo \"FATAL: Data seed missing for payload: $SEED\"; exit 1; }\n./unixnu build payload -D ../device --owner-trust-cache out/owner-trust.bundle --gpu-addon out/gpuaddon.bin --data-ramdisk \"$SEED\" --unique-chip-id \"$UNIXNU_UNIQUE_CHIP_ID\" --kernel-arg sheng-gpu-addon=1 --skip-setup 2>&1 | tee -a ../p4-report/build.log\nP=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/payload/payload.json\ntest -f \"$P\" || { echo \"payload.json MISSING\"; exit 1; }\necho \"== kernel arg safety ==\" | tee ../p4-report/safety.txt\nfor bad in sheng-data-persist sheng-data-reset native-ufs-root native-source-storage; do\n  if grep -q \"$bad\" \"$P\"; then echo \"UNSAFE $bad present\" | tee -a ../p4-report/safety.txt; else echo \"SAFE $bad absent\" | tee -a ../p4-report/safety.txt; fi\ndone\nif [ \"gpu-runtime\" = \"safe-checkpoint\" ]; then\n  ! grep -q -E 'sheng-data-persist|sheng-data-reset|native-ufs-root|native-source-storage' \"$P\"\nelse\n  echo \"dual-boot/persistent root: root-write args are expected on gpu-runtime\"\nfi\n"
+    - name: Verify payload skipped Setup migration
+      working-directory: unixnu
+      run: |
+        set -euo pipefail
+        python3 - <<'PY'
+        import json
+        from pathlib import Path
+        report = json.loads(Path('out/ishtar/ios-27.0.1-24A446/ishtar_ios27/payload/payload.json').read_text())
+        assert report.get('skip_setup') is True, report
+        print('PAYLOAD skip_setup=true data=', report.get('data_ramdisk_sha256'))
+        PY
     - name: bootimg (header v0)
       working-directory: unixnu
       run: 'set -uo pipefail
