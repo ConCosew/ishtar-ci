@@ -78,23 +78,28 @@ def read_volume_uuid(device):
     return uuid.upper()
 
 
-def mounted_volume_uuid(raw, mountpoint):
-    mountpoint.mkdir()
+def attached_volume_uuid(raw):
     attached = plistlib.loads(subprocess.check_output(
-        ['hdiutil', 'attach', '-imagekey', 'diskimage-class=CRawDiskImage', '-readonly', '-nobrowse', '-owners', 'off',
-         '-mountpoint', str(mountpoint), '-plist', str(raw)]))
+        ['hdiutil', 'attach', '-imagekey', 'diskimage-class=CRawDiskImage', '-readonly', '-nomount',
+         '-nobrowse', '-plist', str(raw)]))
     devices = [entry['dev-entry'] for entry in attached.get('system-entities', []) if entry.get('dev-entry')]
-    entities = [entry for entry in attached.get('system-entities', [])
-                if entry.get('mount-point') == str(mountpoint) and entry.get('dev-entry')]
-    if len(entities) != 1:
-        for device in reversed(devices):
-            subprocess.run(['hdiutil', 'detach', device], capture_output=True)
-        raise SystemExit(f'Expected one APFS volume mounted from {raw}, got {len(entities)}')
-    device = entities[0]['dev-entry']
+    if not devices:
+        raise SystemExit(f'hdiutil did not report a device for {raw}')
+    # The raw image begins with NXSB, so the whole image device is the APFS physical store.
+    image_device = devices[0]
     try:
-        return read_volume_uuid(device)
+        store = image_device.removeprefix('/dev/')
+        listing = plistlib.loads(subprocess.check_output(['diskutil', 'apfs', 'list', '-plist']))
+        containers = [entry for entry in listing.get('Containers', [])
+                      if any(item.get('DeviceIdentifier') == store for item in entry.get('PhysicalStores', []))]
+        if len(containers) != 1:
+            raise SystemExit(f'Expected one APFS container on {image_device}, got {len(containers)}')
+        volumes = containers[0].get('Volumes', [])
+        if len(volumes) != 1 or not volumes[0].get('DeviceIdentifier'):
+            raise SystemExit(f'Expected one APFS volume on {image_device}, got {len(volumes)}')
+        return read_volume_uuid('/dev/' + volumes[0]['DeviceIdentifier'])
     finally:
-        subprocess.run(['hdiutil', 'detach', device], check=True, capture_output=True)
+        subprocess.run(['hdiutil', 'detach', image_device], check=True, capture_output=True)
 
 
 def packed_volume_uuid(packed_path, packed_ramdisk):
@@ -106,7 +111,7 @@ def packed_volume_uuid(packed_path, packed_ramdisk):
             for offset, data in extents:
                 stream.seek(offset)
                 stream.write(data)
-        return mounted_volume_uuid(raw, Path(scratch) / 'mount')
+        return attached_volume_uuid(raw)
 
 
 def validate_board(device, root_partition_name, size_mib, reserve_mib, source_bytes, addon_bytes):
