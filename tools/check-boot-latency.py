@@ -91,9 +91,12 @@ def check(data, Image):
     audit(bootstrap, HOOKS[1], 1)
     audit(['_bsd_init'], HOOKS[2], 4)
     audit(['_native_source_storage_start'], HOOKS[2], 9)
-    # The compiler can inline Data preparation into load_init_program.
-    init_callers = ['_load_init_program'] + [name for name in ('_native_owner_data_prepare',)
-                                              if name in symbols]
+    # Five init/mount marks live in load_init_program. Four Data/app marks may
+    # remain in native_owner_data_prepare; two install marks belong to the
+    # independently compiled native_gpu_addon_prepare. Account for inlining.
+    init_callers = ['_load_init_program'] + [name for name in
+        ('_native_owner_data_prepare', '_native_gpu_addon_prepare') if name in symbols]
+    audit(['_load_init_program'], HOOKS[2], 5)
     audit(init_callers, HOOKS[2], 11)
     audit(['_native_legacy_frame_observed'], HOOKS[2], 1)
     exec_candidates = [name for name, address in symbols.items()

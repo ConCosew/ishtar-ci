@@ -8,7 +8,7 @@ jobs:
     - uses: actions/checkout@v4
       with:
         repository: ConCosew/ishtar-device
-        ref: 557360a0649a46de79832bd4d01ef02fb0def263
+        ref: 3a4f8c0a970713a5bdba4608f8560ace03145de2
         token: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
         path: device
         fetch-depth: 0
