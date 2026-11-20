@@ -274,6 +274,11 @@ jobs:
         echo "kernel.macho $(stat -f%z "$K") bytes sha256 $(shasum -a 256 "$K" | cut -d'' '' -f1)" | tee -a ../p4-report/artifacts.txt
 
         '
+    - name: Match original HID bindings to the emitted native slide
+      working-directory: unixnu
+      run: |
+        set -euo pipefail
+        python3 ../ishtar-ci/tools/rebuild-touch-slide.py --tree out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree --device ../device
     - name: Verify APFS constructor binding
       working-directory: unixnu
       run: |
@@ -284,6 +289,11 @@ jobs:
       run: |
         set -euo pipefail
         python3 ../ishtar-ci/tools/check-apfs-vfs-context.py --module-dir kits/XnuPrelink --original out/ipsw/24A446/kernelcache.decompressed --kernel out/ishtar/ios-27.0.1-24A446/ishtar_ios27/kernel/kernel.macho --report ../p4-report/apfs-vfs-context.json
+    - name: Verify emitted Ishtar FTM5 and HID adapter
+      working-directory: unixnu
+      run: |
+        set -euo pipefail
+        python3 ../ishtar-ci/tools/check-ishtar-touch.py --module-dir kits/XnuPrelink --original out/ipsw/24A446/kernelcache.decompressed --kernel out/ishtar/ios-27.0.1-24A446/ishtar_ios27/kernel/kernel.macho --tree out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree --abi ../device/scripts/hid-device-24A446-d94ap.json --report ../p4-report/touch-integration.json
     - name: Kernel bootstrap failure diagnostics
       if: ${{ failure() }}
       working-directory: unixnu
@@ -367,7 +377,7 @@ jobs:
                     'ios_root_partition_bytes': capacity['partition_bytes'],
                     'data_ramdisk_sha256': digest, 'hardware_verified': False,
                     'persistence': 'Seed identity changes when the container grows; old overlay is retained without reset and may not resume',
-                    'input_driver_integrated': False}
+                    'input_driver_integrated': json.loads(Path('../p4-report/touch-integration.json').read_text())['input_driver_integrated']}
         Path('../p4-report/data-setup.json').write_text(json.dumps(evidence, indent=2) + '\n')
         print('PAYLOAD Setup/no-auto-dim helper report and seed hash verified:', digest)
         PY
@@ -413,7 +423,7 @@ jobs:
       working-directory: unixnu
       env:
         GH_TOKEN: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
-        TAG: gpu-runtime-${{ github.run_id }}
+        TAG: gpu-runtime-touch-${{ github.run_id }}
       run: 'set -euo pipefail
 
         B=out/ishtar/ios-27.0.1-24A446/ishtar_ios27/boot/boot.img
@@ -428,11 +438,11 @@ jobs:
 
         ( cd out && shasum -a 256 gpuaddon.bin owner-trust.bundle ) > gpu-runtime-sha256.txt
 
-        shasum -a 256 "$B" "$K" "$P" ../p4-report/apfs-constructor.json ../p4-report/apfs-vfs-context.json ../p4-report/data-setup.json >> gpu-runtime-sha256.txt
+        shasum -a 256 "$B" "$K" "$P" ../p4-report/apfs-constructor.json ../p4-report/apfs-vfs-context.json ../p4-report/data-setup.json ../p4-report/touch-integration.json >> gpu-runtime-sha256.txt
 
         cat > gpu-runtime-notes.md <<''NOTES''
 
-        Compile-only GPU runtime checkpoint.
+        Experimental Ishtar FTM5 touch image on the 256 MiB GPU runtime baseline.
 
 
         - Built from the isolated `gpu-runtime` branches; mainline `dual-boot` / `ishtar-build` are untouched.
@@ -453,7 +463,9 @@ jobs:
 
         - The 256 MiB limit stays below RamBlock''s 2 GiB volatile-sparse fallback threshold for the prior 32 MiB store. data-setup.json verifies both pre- and post-Setup APFS geometry, the final read-only APFS Volume UUID, addon expansion, ios_root bounds, fallback bound, Setup policy and packed payload seed hash. Hardware persistence and boot speed remain unverified.
 
-        - No ishtar ST FTS/GPI/HID input driver is included. Do not reset or write over the old Data store.
+        - Includes the owned ST FTM5 / GPI DMA polling path and iOS 27 arm64e IOHIDDevice adapter, enabled by `ishtar-touch=1`. touch-integration.json verifies the emitted startup call, compiled transport functions and all 207 vtable authentication slots. Contact coordinates map 14400x32000 to 32767x32767 with ten IDs and explicit lifts.
+
+        - Touch remains an on-device experiment. FIFO and owned faults are polled; GPIO67/118 IRQ wiring and PM8008 L7 analog power are not qualified by this build. Do not reset or write over the old Data store.
 
         - NOT booted. No GPU, Metal, DPU, touch or WiFi hardware behaviour is validated by this build.
 
@@ -461,9 +473,9 @@ jobs:
 
         NOTES
 
-        gh release create "$TAG" --repo ConCosew/ishtar-device --target gpu-runtime --title "GPU runtime $TAG" --notes-file gpu-runtime-notes.md --prerelease --latest=false
+        gh release create "$TAG" --repo ConCosew/ishtar-device --target gpu-runtime --title "GPU runtime touch $TAG" --notes-file gpu-runtime-notes.md --prerelease --latest=false
 
-        gh release upload "$TAG" "$B" "$K" "$P" out/gpuaddon.bin out/owner-trust.bundle gpu-runtime-sha256.txt ../p4-report/apfs-constructor.json ../p4-report/apfs-vfs-context.json ../p4-report/data-setup.json --repo ConCosew/ishtar-device --clobber
+        gh release upload "$TAG" "$B" "$K" "$P" out/gpuaddon.bin out/owner-trust.bundle gpu-runtime-sha256.txt ../p4-report/apfs-constructor.json ../p4-report/apfs-vfs-context.json ../p4-report/data-setup.json ../p4-report/touch-integration.json --repo ConCosew/ishtar-device --clobber
 
         echo "published GPU runtime release $TAG"
 
