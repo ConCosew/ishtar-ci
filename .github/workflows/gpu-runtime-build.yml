@@ -273,6 +273,11 @@ jobs:
       run: |
         set -euo pipefail
         python3 ../ishtar-ci/tools/check-ishtar-touch.py --module-dir kits/XnuPrelink --original out/ipsw/24A446/kernelcache.decompressed --kernel out/ishtar/ios-27.0.1-24A446/ishtar_ios27/kernel/kernel.macho --tree out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree --abi ../device/scripts/hid-device-24A446-d94ap.json --report ../p4-report/touch-integration.json
+    - name: Verify atomic GPU addon install and publication
+      working-directory: unixnu
+      run: |
+        set -euo pipefail
+        python3 ../ishtar-ci/tools/check-ishtar-addon-install.py --source out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/.cache/xnu-work/bsd/kern/kern_exec.c --kernel out/ishtar/ios-27.0.1-24A446/ishtar_ios27/kernel/kernel.macho --addon out/gpuaddon.bin --report ../p4-report/addon-install.json
     - name: Kernel bootstrap failure diagnostics
       if: ${{ failure() }}
       working-directory: unixnu
@@ -417,7 +422,7 @@ jobs:
 
         ( cd out && shasum -a 256 gpuaddon.bin owner-trust.bundle ) > gpu-runtime-sha256.txt
 
-        shasum -a 256 "$B" "$K" "$P" ../p4-report/apfs-constructor.json ../p4-report/apfs-vfs-context.json ../p4-report/data-setup.json ../p4-report/touch-integration.json >> gpu-runtime-sha256.txt
+        shasum -a 256 "$B" "$K" "$P" ../p4-report/apfs-constructor.json ../p4-report/apfs-vfs-context.json ../p4-report/data-setup.json ../p4-report/touch-integration.json ../p4-report/addon-install.json >> gpu-runtime-sha256.txt
 
         cat > gpu-runtime-notes.md <<''NOTES''
 
@@ -440,6 +445,8 @@ jobs:
 
         - Builds the 32 MiB base Data seed, grows its APFS container to 256 MiB using the pinned seed-data-grow.py helper, verifies ios_root bounds, expanded GPU addon capacity and preservation of the APFS Volume UUID, then applies the configured skip-setup/no-auto-dim policy for 24A446. The expanded seed has a new disk identity; the old overlay is retained without reset, is not resumed, and this build runs with volatile Data.
 
+        - GPU addon installation is atomic per file: each staged file is mode-set, fsynced and closed before no-follow rename; the publish marker is last. A failed install does not mount any GPU addon overlay. addon-install.json records the pinned source checks and failure-injection tests.
+
         - The 256 MiB limit stays below RamBlock''s 2 GiB volatile-sparse fallback threshold for the prior 32 MiB store. data-setup.json verifies both pre- and post-Setup APFS geometry, the final read-only APFS Volume UUID, addon expansion, ios_root bounds, fallback bound, Setup policy and packed payload seed hash. Hardware persistence and boot speed remain unverified.
 
         - Includes the owned ST FTM5 / GPI DMA polling path and iOS 27 arm64e IOHIDDevice adapter, enabled by `ishtar-touch=1`. touch-integration.json verifies the emitted startup call, compiled transport functions and all 207 vtable authentication slots. Contact coordinates map 14400x32000 to 32767x32767 with ten IDs and explicit lifts.
@@ -454,7 +461,7 @@ jobs:
 
         gh release create "$TAG" --repo ConCosew/ishtar-device --target gpu-runtime --title "GPU runtime touch $TAG" --notes-file gpu-runtime-notes.md --prerelease --latest=false
 
-        gh release upload "$TAG" "$B" "$K" "$P" out/gpuaddon.bin out/owner-trust.bundle gpu-runtime-sha256.txt ../p4-report/apfs-constructor.json ../p4-report/apfs-vfs-context.json ../p4-report/data-setup.json ../p4-report/touch-integration.json --repo ConCosew/ishtar-device --clobber
+        gh release upload "$TAG" "$B" "$K" "$P" out/gpuaddon.bin out/owner-trust.bundle gpu-runtime-sha256.txt ../p4-report/apfs-constructor.json ../p4-report/apfs-vfs-context.json ../p4-report/data-setup.json ../p4-report/touch-integration.json ../p4-report/addon-install.json --repo ConCosew/ishtar-device --clobber
 
         echo "published GPU runtime release $TAG"
 
