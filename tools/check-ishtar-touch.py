@@ -56,6 +56,25 @@ def function(image, address):
     require(0 < length <= 256 * 1024, 'unexpected function size')
     return image.read(address, length)
 
+def verify_original_bindings(report, native, symbols):
+    require(report['relocation_mode'] == 'prelink-original-stubs' and report['native_slide_compensated'] is False,
+            'original bindings must use the pinned emitter relocation contract')
+    bindings = []
+    for name, address in report['bindings'].items():
+        if name in ('__ZN11IOHIDDevice10gMetaClassE', '__ZTV11IOHIDDevice'):
+            continue
+        original_address = int(address, 16)
+        require(report['original_thunk_targets'][name] == address, 'original target was slide-compensated: ' + name)
+        require(name in symbols, 'original class thunk missing: ' + name)
+        thunk = symbols[name]
+        code = native.read(thunk, 8)
+        require(struct.unpack_from('<I', code)[0] == 0xd503245f, 'original thunk lost BTI: ' + name)
+        require(original_address in set(branches(code, thunk)), 'original class thunk target drift: ' + name)
+        bindings.append({'symbol': name, 'target': address, 'thunk': hex(thunk)})
+    require(bool(bindings), 'no original class bindings checked')
+    return bindings
+
+
 def check(original, emitted, Image, args):
     abi = json.loads(args.abi.read_text())
     report_path = args.tree / 'build/native-ishtar-touch/build-report.json'
@@ -106,16 +125,10 @@ def check(original, emitted, Image, args):
         if any(lo <= before[0] < hi for lo, hi in code_ranges):
             require(before == after, f'original IOHIDFamily vtable target changed {index}')
             retained_family_slots += 1
-    bindings = []
-    for name, address in report['bindings'].items():
-        original_address = int(address, 16)
-        if name in ('__ZN11IOHIDDevice10gMetaClassE', '__ZTV11IOHIDDevice'):
-            continue
-        require(name in symbols, 'original class thunk missing: ' + name)
-        thunk = symbols[name]
-        require(original_address in set(branches(dst.read(thunk, 8), thunk)), 'original class thunk target drift: ' + name)
-        require(src.read(original_address, 16) == dst.read(original_address, 16), 'original function instructions changed: ' + name)
-        bindings.append({'symbol': name, 'target': address, 'thunk': hex(thunk)})
+    bindings = verify_original_bindings(report, native, symbols)
+    for binding in bindings:
+        address = int(binding['target'], 16)
+        require(src.read(address, 16) == dst.read(address, 16), 'original function instructions changed: ' + binding['symbol'])
     baseline = json.loads((args.report.parent / 'gpu-baseline.json').read_text())
     require(baseline['result'] == 'PASS' and baseline['run_id'] == 44502687562, 'wrong GPU baseline')
     expected_gpu = {'gpuaddon.bin': '21d601e84157d8cb935430ac9c9a998a1ec58179ea392142135e39cc21d3081a',
@@ -123,7 +136,8 @@ def check(original, emitted, Image, args):
     for name, digest in expected_gpu.items():
         require(baseline['files'][name]['sha256'] == digest == sha(Path('out') / name), 'GPU baseline bytes drifted: ' + name)
     return {'result': 'PASS', 'hardware_verified': False, 'input_driver_integrated': True,
-            'gpu_baseline': baseline,
+            'gpu_baseline': baseline, 'relocation_mode': report['relocation_mode'],
+            'native_slide_compensated': False,
             'kernel_sha256': hashlib.sha256(emitted).hexdigest(), 'original_sha256': ORIGINAL_HASH,
             'archive_sha256': report['archive_sha256'], 'virtual_entries': len(rows),
             'vtable': hex(vtable), 'vtable_slots': rows,

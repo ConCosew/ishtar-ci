@@ -253,11 +253,11 @@ jobs:
         echo "kernel.macho $(stat -f%z "$K") bytes sha256 $(shasum -a 256 "$K" | cut -d'' '' -f1)" | tee -a ../p4-report/artifacts.txt
 
         '
-    - name: Match original HID bindings to the emitted native slide
+    - name: Verify prelink-relocated HID original bindings
       working-directory: unixnu
       run: |
         set -euo pipefail
-        python3 ../ishtar-ci/tools/rebuild-touch-slide.py --tree out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree --device ../device
+        python3 ../ishtar-ci/tools/rebuild-touch-slide.py --tree out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree --kernel out/ishtar/ios-27.0.1-24A446/ishtar_ios27/kernel/kernel.macho
     - name: Verify APFS constructor binding
       working-directory: unixnu
       run: |
@@ -459,6 +459,25 @@ jobs:
         echo "published GPU runtime release $TAG"
 
         '
+    - name: Preserve touch build diagnostics
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ishtar-touch-diagnostics-${{ github.run_id }}
+        retention-days: 3
+        if-no-files-found: ignore
+        path: |
+          unixnu/out/ishtar/ios-27.0.1-24A446/ishtar_ios27/kernel/kernel.macho
+          unixnu/out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/build/native-ishtar-touch/
+          unixnu/out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/scripts/build-ishtar-touch-27.py
+          unixnu/out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/kits/ishtar/touch/
+          unixnu/out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/kits/ArmSmmu4K/ArmSmmu4K.c
+          unixnu/out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/kits/ArmSmmu4K/ArmSmmu4K.h
+          unixnu/out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/kits/ArmSmmu4K/ArmSmmu4KContext.c
+          unixnu/out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/kits/ArmSmmu4K/ArmSmmu4KContext.h
+          unixnu/out/ishtar/ios-27.0.1-24A446/ishtar_ios27/tree/kits/ArmSmmu4K/LICENSE
+          device/scripts/hid-device-24A446-d94ap.json
+          p4-report/
     - name: GPU runtime build report
       if: ${{ always() }}
       working-directory: unixnu
