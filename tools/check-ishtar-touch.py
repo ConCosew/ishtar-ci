@@ -116,7 +116,14 @@ def check(original, emitted, Image, args):
         require(original_address in set(branches(dst.read(thunk, 8), thunk)), 'original class thunk target drift: ' + name)
         require(src.read(original_address, 16) == dst.read(original_address, 16), 'original function instructions changed: ' + name)
         bindings.append({'symbol': name, 'target': address, 'thunk': hex(thunk)})
+    baseline = json.loads((args.report.parent / 'gpu-baseline.json').read_text())
+    require(baseline['result'] == 'PASS' and baseline['run_id'] == 44502687562, 'wrong GPU baseline')
+    expected_gpu = {'gpuaddon.bin': '21d601e84157d8cb935430ac9c9a998a1ec58179ea392142135e39cc21d3081a',
+                    'owner-trust.bundle': '7aa6455edeabb74f753301a721af51eb2800e026227414bd31e70cffbabe0cef'}
+    for name, digest in expected_gpu.items():
+        require(baseline['files'][name]['sha256'] == digest == sha(Path('out') / name), 'GPU baseline bytes drifted: ' + name)
     return {'result': 'PASS', 'hardware_verified': False, 'input_driver_integrated': True,
+            'gpu_baseline': baseline,
             'kernel_sha256': hashlib.sha256(emitted).hexdigest(), 'original_sha256': ORIGINAL_HASH,
             'archive_sha256': report['archive_sha256'], 'virtual_entries': len(rows),
             'vtable': hex(vtable), 'vtable_slots': rows,
