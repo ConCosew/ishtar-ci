@@ -1,32 +1,31 @@
 name: porting-record
-
-on:
-  workflow_dispatch:
-
 permissions:
   contents: read
-
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          repository: ConCosew/ishtar-device
-          ref: gpu-runtime
-          token: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
-          path: device
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
-          repository: UniXNU/UniXNU
-          ref: main
-          path: tools
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Validate structure and changed areas
-        run: |
-          python3 tools/scripts/porting-record.py check --device device --base refs/remotes/origin/main
+    - uses: actions/checkout@v4
+      with:
+        repository: ConCosew/ishtar-device
+        ref: cd01066308eaebc74e09b402d7558338cd08f18e
+        token: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
+        path: device
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: actions/checkout@v4
+      with:
+        repository: ConCosew/ishtar-unixnu
+        ref: 0a03cb6d39f582cd3a527c06eeb6b42b3ba8f02c
+        path: tools
+        persist-credentials: false
+        token: ${{ secrets.UNIXNU_DEVICE_TOKEN }}
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Validate structure and changed areas
+      run: 'python3 tools/scripts/porting-record.py check --device device --base refs/remotes/origin/main
+
+        '
+'on':
+  workflow_dispatch: null
