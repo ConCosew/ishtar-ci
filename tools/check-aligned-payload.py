@@ -38,10 +38,15 @@ def audit_metadata(payload, base):
 
 def audit_config(config, args):
     assert config['boot']['default'] == 'xnu'
-    assert len(config['entry']) == 1 and config['entry'][0]['id'] == 'xnu'
-    entry = config['entry'][0]
+    entries = config['entry']
+    assert len(entries) == 3 and {e['id'] for e in entries} == {'xnu', 'reset', 'shutdown'}
+    entry = next(e for e in entries if e['id'] == 'xnu')
+    assert entry['type'] == 'xnu' and entry['path'] == 'Payloads/kernel.macho'
     assert entry['args'].split() == args and not entry.get('confirm_args')
     assert entry['initrd'] == 'Payloads/scratch-data.img'
+    assert next(e for e in entries if e['id'] == 'reset') == {'id': 'reset', 'title': 'Restart', 'type': 'action', 'action': 'reset'}
+    assert next(e for e in entries if e['id'] == 'shutdown') == {'id': 'shutdown', 'title': 'Power off', 'type': 'action', 'action': 'shutdown'}
+    assert all(not e.get('confirm_args') for e in entries)
     assert not any(a.startswith('sheng-data-reset=') for a in args)
 
 
